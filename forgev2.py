@@ -4,6 +4,7 @@ import numpy as np
 import ccxt
 import plotly.graph_objects as go
 from datetime import datetime, timezone
+from streamlit_autorefresh import st_autorefresh
 
 # =========================
 # CONFIG
@@ -28,20 +29,23 @@ def get_session():
     else:
         return "Quiet Hours", "Low volume", "#888888"
 
+session_name,note,color=get_session()
+st.markdown(f"<h3 style='text-align:center;color:{color};'>💹 {session_name} — {note}</h3>",unsafe_allow_html=True)
+
 # =========================
 # USER INPUTS
 # =========================
 col1, col2, col3 = st.columns(3)
 with col1:
-    exchange_id = st.selectbox("Exchange", ["binance","bitget","gateio","xt"])
+    exchange_id = st.selectbox("Exchange", ["binance","bitget","gateio","xt"], key="exchange")
 with col2:
-    symbol = st.selectbox("Symbol", ["BTC/USDT","ETH/USDT","SOL/USDT"])
+    symbol = st.selectbox("Symbol", ["BTC/USDT","ETH/USDT","SOL/USDT"], key="symbol")
 with col3:
-    timeframe = st.selectbox("Timeframe", ["15m","1h","4h","1d"])
+    timeframe = st.selectbox("Timeframe", ["15m","1h","4h","1d"], key="timeframe")
 
-balance = st.number_input("Account Balance ($)", min_value=100.0, value=10000.0)
-risk_pct = st.slider("Risk per Trade (%)", 0.5, 5.0, 1.0, 0.1)
-refresh_interval = st.slider("Refresh interval (seconds)", 2, 10, 3)
+balance = st.number_input("Account Balance ($)", min_value=100.0, value=10000.0, key="balance")
+risk_pct = st.slider("Risk per Trade (%)", 0.5, 5.0, 1.0, 0.1, key="risk")
+refresh_interval = st.slider("Refresh interval (seconds)", 2, 10, 3, key="refresh_interval")
 
 # =========================
 # INDICATORS
@@ -169,10 +173,9 @@ def calc_position(signal_dict,balance,risk_pct):
     return round(size,6),round(risk_amount,2)
 
 # =========================
-# AUTORELOAD
+# AUTO-REFRESH
 # =========================
-from streamlit_autorefresh import st_autorefresh
-st_autorefresh(interval=refresh_interval*1000,key="refresh")
+st_autorefresh(interval=refresh_interval*1000,key="refresh_autorefresh")
 
 # =========================
 # FETCH DATA WITH FALLBACK
@@ -192,22 +195,17 @@ if df.empty or live_price is None:
     st.stop()
 
 # =========================
-# DISPLAY SESSION + PRICE
+# DISPLAY LIVE PRICE + SIGNAL
 # =========================
-session_name,note,color=get_session()
-st.markdown(f"<h3 style='text-align:center;color:{color};'>💹 {session_name} — {note}</h3>",unsafe_allow_html=True)
 prev_close=df['Close'].iloc[-2] if len(df)>1 else live_price
-st.metric(label=f"Live {symbol} on {exchange_id.upper()}", value=f"${live_price:,.2f}", delta=f"{live_price-prev_close:.2f}")
+st.metric(label=f"Live {symbol} on {exchange_id.upper()}", value=f"${live_price:,.2f}", delta=f"{live_price-prev_close:.2f}", key=f"metric_{symbol}")
 
-# =========================
-# SIGNAL + TRADE LEVELS
-# =========================
 signal,score,levels=generate_signal(df)
 st.markdown(f"<h2 style='text-align:center;color:#00FF9F;'>Signal: {signal} ({score}%)</h2>",unsafe_allow_html=True)
 if levels:
     size,risk_amount=calc_position(levels,balance,risk_pct)
-    st.write(f"Entry: ${levels['entry']:.2f}, SL: ${levels['sl']:.2f}, TP1: ${levels['tp1']:.2f}, TP2: ${levels['tp2']:.2f}, ATR: {levels['atr']:.2f}")
-    st.write(f"Recommended Size: {size} {symbol.split('/')[0]}, Risk: ${risk_amount:.2f}")
+    st.write(f"Entry: ${levels['entry']:.2f}, SL: ${levels['sl']:.2f}, TP1: ${levels['tp1']:.2f}, TP2: ${levels['tp2']:.2f}, ATR: {levels['atr']:.2f}", key=f"levels_{symbol}")
+    st.write(f"Recommended Size: {size} {symbol.split('/')[0]}, Risk: ${risk_amount:.2f}", key=f"size_{symbol}")
 
 # =========================
 # CANDLESTICK CHART
@@ -222,27 +220,4 @@ fig.add_candlestick(
     name="Price"
 )
 fig.update_layout(height=500,xaxis_rangeslider_visible=False)
-st.plotly_chart(fig,use_container_width=True)
-
-# =========================
-# BACKTEST ENGINE
-# =========================
-st.subheader("📊 Quick Backtest")
-lookback_bars = st.slider("Bars for Backtest", 50, 300, 100)
-df_back=df.iloc[-lookback_bars:].copy()
-df_back=Indicators.atr(df_back)
-df_back=Indicators.rsi(df_back)
-df_back=Indicators.macd(df_back)
-df_back=Indicators.ichimoku(df_back)
-
-# Simple backtest: calculate signals and hypothetical PnL
-results=[]
-for i in range(1,len(df_back)):
-    last=df_back.iloc[i]
-    sig,_,lvl=generate_signal(df_back.iloc[:i+1])
-    if lvl:
-        entry,lvl_sl,lvl_tp=lvl['entry'],lvl['sl'],lvl['tp1']
-        pnl=(lvl_tp-entry)/entry if "BUY" in sig else (entry-lvl_tp)/entry
-        results.append(pnl*100)
-if results:
-    st.write(f"Avg hypothetical % return over last {lookback_bars} bars: {np.mean(results):.2f}%")
+st.plotly_chart(fig,use_container_width=True,key=f"chart_{symbol}_{timeframe}")
