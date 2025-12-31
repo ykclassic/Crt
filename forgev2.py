@@ -1,5 +1,5 @@
 # =========================
-# MAIN ASYNC LOOP WITH SESSION & TIME
+# MAIN ASYNC LOOP WITH DYNAMIC SESSION DISPLAY
 # =========================
 async def main():
     exchange_cls = getattr(ccxtpro, exchange_id)
@@ -18,7 +18,7 @@ async def main():
     chart_placeholder = st.empty()
     signal_placeholder = st.empty()
     info_placeholder = st.empty()
-    time_placeholder = st.empty()  # Placeholder for current time & session
+    session_placeholder = st.empty()  # Placeholder for session & UTC time
 
     while True:
         # -------------------
@@ -26,21 +26,38 @@ async def main():
         # -------------------
         now = datetime.now(timezone.utc)
         hour = now.hour
-        if 0 <= hour < 8:
-            session_name, note, color = "Asian Session", "Range-bound moves", "#FF8E53"
-        elif 8 <= hour < 12:
-            session_name, note, color = "London Open", "Breakouts expected", "#667eea"
-        elif 12 <= hour < 16:
-            session_name, note, color = "NY + London Overlap", "Highest volatility", "#764ba2"
-        elif 16 <= hour < 21:
-            session_name, note, color = "New York Session", "Trend continuation", "#43E97B"
-        else:
-            session_name, note, color = "Quiet Hours", "Low volume", "#888888"
 
-        time_placeholder.markdown(
-            f"<h4 style='text-align:center;color:{color};'>⏱ UTC Time: {now.strftime('%H:%M:%S')} — {session_name} ({note})</h4>",
-            unsafe_allow_html=True
-        )
+        if 0 <= hour < 8:
+            session_name, note, color, pulse = "Asian Session", "Range-bound moves", "#FFB86C", "0.8"
+        elif 8 <= hour < 12:
+            session_name, note, color, pulse = "London Open", "Breakouts expected", "#8A2BE2", "1"
+        elif 12 <= hour < 16:
+            session_name, note, color, pulse = "NY + London Overlap", "Highest volatility", "#FF416C", "1.2"
+        elif 16 <= hour < 21:
+            session_name, note, color, pulse = "New York Session", "Trend continuation", "#43E97B", "1"
+        else:
+            session_name, note, color, pulse = "Quiet Hours", "Low volume", "#888888", "0.6"
+
+        session_placeholder.markdown(f"""
+        <div style="
+            text-align:center;
+            padding:10px 0;
+            border-radius:15px;
+            background: linear-gradient(90deg, {color} 0%, #000000 100%);
+            color:white;
+            font-size:1.5rem;
+            font-weight:bold;
+            animation: pulse {pulse}s infinite alternate;
+        ">
+            ⏱ UTC Time: {now.strftime('%H:%M:%S')} — {session_name} ({note})
+        </div>
+        <style>
+        @keyframes pulse {{
+            0% {{ opacity: 0.6; }}
+            100% {{ opacity: 1; }}
+        }}
+        </style>
+        """, unsafe_allow_html=True)
 
         # -------------------
         # FETCH LIVE PRICE
