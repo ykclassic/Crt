@@ -6,3 +6,4 @@ plotly
 backtesting
 matplotlib
 ccxt
+ta
