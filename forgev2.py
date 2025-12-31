@@ -1,17 +1,17 @@
-# profitforge_single.py
+# profitforge_ccxt.py
 import streamlit as st
-import ccxtpro
-import asyncio
+import ccxt
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
+import time
 import plotly.graph_objects as go
 
 # -----------------------------
 # PAGE CONFIG
 # -----------------------------
 st.set_page_config(page_title="ProfitForge Pro", layout="wide")
-st.title("🔥 ProfitForge Pro - Single File Edition")
+st.title("🔥 ProfitForge Pro - CCXT Polling Edition")
 
 # -----------------------------
 # PLACEHOLDERS
@@ -32,6 +32,7 @@ with st.sidebar:
     timeframe = st.selectbox("Chart Timeframe", ["15m", "1h", "4h", "1d"], index=1)
     balance = st.number_input("Account Balance ($)", min_value=100.0, value=10000.0)
     risk_pct = st.slider("Risk per Trade (%)", 0.5, 5.0, 1.0, 0.1)
+    refresh_btn = st.button("Refresh Now")
 
 # -----------------------------
 # INDICATORS
@@ -77,141 +78,145 @@ class Indicators:
         return df
 
 # -----------------------------
+# SESSION DETECTOR
+# -----------------------------
+def get_session():
+    utc_now = datetime.now(timezone.utc)
+    hour = utc_now.hour
+    if 0 <= hour < 8:
+        return "Asian Session", "#FFB86C"
+    elif 8 <= hour < 12:
+        return "London Open", "#8A2BE2"
+    elif 12 <= hour < 16:
+        return "NY + London Overlap", "#FF416C"
+    elif 16 <= hour < 21:
+        return "New York Session", "#43E97B"
+    else:
+        return "Quiet Hours", "#888888"
+
+# -----------------------------
 # SIGNAL CALCULATION
 # -----------------------------
 def calculate_score(last):
     score = 50
-    if last.get('RSI', 50) < 30: score += 30
-    if last.get('RSI', 50) > 70: score -= 30
-    if last.get('MACD', 0) > last.get('MACD_Signal', 0): score += 20
-    if last.get('MACD', 0) < last.get('MACD_Signal', 0): score -= 20
-    cloud_top = max(last.get('SpanA', last['Close']), last.get('SpanB', last['Close']))
-    cloud_bottom = min(last.get('SpanA', last['Close']), last.get('SpanB', last['Close']))
-    if last['Close'] > cloud_top: score += 20
-    if last['Close'] < cloud_bottom: score -= 20
+    if last.get('RSI',50)<30: score+=30
+    if last.get('RSI',50)>70: score-=30
+    if last.get('MACD',0)>last.get('MACD_Signal',0): score+=20
+    if last.get('MACD',0)<last.get('MACD_Signal',0): score-=20
+    cloud_top = max(last.get('SpanA',last['Close']), last.get('SpanB', last['Close']))
+    cloud_bottom = min(last.get('SpanA',last['Close']), last.get('SpanB', last['Close']))
+    if last['Close']>cloud_top: score+=20
+    if last['Close']<cloud_bottom: score-=20
     return score
 
 def generate_signal(df):
-    if df.empty or len(df) < 52:
-        return "NO DATA", 0, None
+    if df.empty or len(df)<52: return "NO DATA",0,None
+    df=Indicators.atr(df.copy())
+    df=Indicators.rsi(df)
+    df=Indicators.macd(df)
+    df=Indicators.ichimoku(df)
+    last=df.iloc[-1]
+    atr=last['ATR']
+    current_price=last['Close']
+    atr_avg=df['ATR'].mean()
+    if atr<atr_avg*0.5: return "NO TRADE",0,None
+    score=calculate_score(last)
+    if score>=80: signal="STRONG BUY"
+    elif score>=65: signal="BUY"
+    elif score<=20: signal="STRONG SELL"
+    elif score<=35: signal="SELL"
+    else: signal="HOLD"
+    is_buy="BUY" in signal
+    entry=current_price*(1.001 if is_buy else 0.999)
+    sl=current_price-(atr*2) if is_buy else current_price+(atr*2)
+    tp1=current_price*1.03 if is_buy else current_price*0.97
+    tp2=current_price*1.06 if is_buy else current_price*0.94
+    return signal, score, {"entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"atr":atr}
 
-    df = Indicators.atr(df.copy())
-    df = Indicators.rsi(df)
-    df = Indicators.macd(df)
-    df = Indicators.ichimoku(df)
-
-    last = df.iloc[-1]
-    atr = last['ATR']
-    current_price = last['Close']
-
-    atr_avg = df['ATR'].mean()
-    if atr < atr_avg * 0.5:
-        return "NO TRADE", 0, None
-
-    score = calculate_score(last)
-
-    if score >= 80:
-        signal = "STRONG BUY"
-    elif score >= 65:
-        signal = "BUY"
-    elif score <= 20:
-        signal = "STRONG SELL"
-    elif score <= 35:
-        signal = "SELL"
-    else:
-        signal = "HOLD"
-
-    is_buy = "BUY" in signal
-    entry = current_price * (1.001 if is_buy else 0.999)
-    sl = current_price - (atr * 2) if is_buy else current_price + (atr * 2)
-    tp1 = current_price * 1.03 if is_buy else current_price * 0.97
-    tp2 = current_price * 1.06 if is_buy else current_price * 0.94
-
-    return signal, score, {"entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2, "atr": atr}
-
-def calculate_position(levels, balance, risk_pct):
-    if not levels: return 0, 0
-    risk_amount = balance * (risk_pct / 100)
-    risk_per_unit = abs(levels['entry'] - levels['sl'])
-    if risk_per_unit <= 0: return 0, 0
-    size = risk_amount / risk_per_unit
+def calculate_position(levels,balance,risk_pct):
+    if not levels: return 0,0
+    risk_amount=balance*(risk_pct/100)
+    risk_per_unit=abs(levels['entry']-levels['sl'])
+    if risk_per_unit<=0: return 0,0
+    size=risk_amount/risk_per_unit
     return round(size,6), round(risk_amount,2)
 
 # -----------------------------
 # TRADE JOURNAL
 # -----------------------------
 if 'journal' not in st.session_state:
-    st.session_state.journal = []
+    st.session_state.journal=[]
 
-def log_trade(signal, size, levels):
+def log_trade(signal,size,levels):
     if size==0 or not levels: return
     st.session_state.journal.append({
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "symbol": symbol,
-        "signal": signal,
-        "entry": levels['entry'],
-        "sl": levels['sl'],
-        "size": size,
-        "risk_$": size * abs(levels['entry']-levels['sl']),
-        "status": "OPEN"
+        "time":datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "symbol":symbol,
+        "signal":signal,
+        "entry":levels['entry'],
+        "sl":levels['sl'],
+        "size":size,
+        "risk_$":size*abs(levels['entry']-levels['sl']),
+        "status":"OPEN"
     })
 
 # -----------------------------
-# ASYNC MAIN LOOP
+# FETCH DATA
 # -----------------------------
-async def main_loop():
-    exchange_cls = getattr(ccxtpro, exchange_id)
-    exchange = exchange_cls({"enableRateLimit": True})
-    await exchange.load_markets()
-    df = pd.DataFrame()
-
-    while True:
-        # --- Time & Session ---
-        now = datetime.now(timezone.utc)
-        hour = now.hour
-        if 0 <= hour < 8: session_name,color="#FFB86C"
-        elif 8 <= hour < 12: session_name,color="#8A2BE2"
-        elif 12 <= hour < 16: session_name,color="#FF416C"
-        elif 16 <= hour < 21: session_name,color="#43E97B"
-        else: session_name,color="#888888"
-
-        session_ph.markdown(f"<div style='text-align:center;color:white;background:{color};padding:8px;border-radius:12px;'>UTC {now.strftime('%H:%M:%S')} — {session_name}</div>", unsafe_allow_html=True)
-
-        # --- Fetch price ---
-        try:
-            ticker = await exchange.watch_ticker(symbol)
-            price = ticker['last']
-        except: price=None
-
-        if price:
-            price_ph.markdown(f"<h2 style='text-align:center;color:#00FF9F;'>${price:,.2f}</h2>", unsafe_allow_html=True)
-
-            new_row={"Open":price,"High":price,"Low":price,"Close":price,"Volume":ticker.get("quoteVolume",0)}
-            df=df.append(pd.DataFrame([new_row],index=[datetime.utcnow()]))
-            if len(df)>300: df=df.iloc[-300:]
-
-            signal,score,levels=generate_signal(df)
-            signal_ph.markdown(f"<h2 style='text-align:center;color:#00FF9F;'>Signal: {signal} ({score}%)</h2>", unsafe_allow_html=True)
-
-            # Position
-            size,risk_amount=calculate_position(levels,balance,risk_pct)
-            info_ph.write(f"Entry: {levels['entry']:.2f}, SL: {levels['sl']:.2f}, TP1: {levels['tp1']:.2f}, TP2: {levels['tp2']:.2f}, ATR: {levels['atr']:.2f}")
-            info_ph.write(f"Size: {size}, Risk: ${risk_amount:.2f}")
-
-            # Candlestick
-            fig=go.Figure()
-            fig.add_candlestick(
-                x=df.index[-50:],
-                open=df["Open"][-50:], high=df["High"][-50:],
-                low=df["Low"][-50:], close=df["Close"][-50:]
-            )
-            fig.update_layout(height=400, xaxis_rangeslider_visible=False)
-            chart_ph.plotly_chart(fig,use_container_width=True)
-
-        await asyncio.sleep(1)
+def fetch_data(exchange_id,symbol,timeframe,limit=300):
+    try:
+        exchange_cls=getattr(ccxt,exchange_id)
+        exchange=exchange_cls({"enableRateLimit":True})
+        ohlcv=exchange.fetch_ohlcv(symbol,timeframe=timeframe,limit=limit)
+        df=pd.DataFrame(ohlcv,columns=['timestamp','Open','High','Low','Close','Volume'])
+        df['timestamp']=pd.to_datetime(df['timestamp'],unit='ms')
+        df.set_index('timestamp', inplace=True)
+        return df
+    except Exception as e:
+        st.warning(f"{exchange_id.upper()} error: {e}")
+        return pd.DataFrame()
 
 # -----------------------------
-# RUN ASYNC LOOP
+# MAIN LOOP
 # -----------------------------
-if __name__=="__main__":
-    asyncio.run(main_loop())
+def main():
+    # Session
+    session_name,color=get_session()
+    session_ph.markdown(f"<div style='text-align:center;color:white;background:{color};padding:8px;border-radius:12px;'>{session_name}</div>",unsafe_allow_html=True)
+    # Fetch data
+    df=fetch_data(exchange_id,symbol,timeframe)
+    if df.empty: return st.warning("No data available yet.")
+    # Latest price
+    live_price=df['Close'].iloc[-1]
+    price_ph.markdown(f"<h2 style='text-align:center;color:#00FF9F;'>${live_price:,.2f}</h2>",unsafe_allow_html=True)
+    # Signal
+    signal,score,levels=generate_signal(df)
+    signal_ph.markdown(f"<h3 style='text-align:center;color:#00FF9F;'>Signal: {signal} ({score}%)</h3>",unsafe_allow_html=True)
+    # Position & Risk
+    size,risk_amount=calculate_position(levels,balance,risk_pct)
+    info_ph.write(f"Entry: {levels['entry']:.2f}, SL: {levels['sl']:.2f}, TP1: {levels['tp1']:.2f}, TP2: {levels['tp2']:.2f}, ATR: {levels['atr']:.2f}")
+    info_ph.write(f"Size: {size}, Risk: ${risk_amount:.2f}")
+    if st.button("Log Trade"):
+        log_trade(signal,size,levels)
+    # Chart
+    fig=go.Figure()
+    fig.add_candlestick(
+        x=df.index[-50:],
+        open=df["Open"][-50:], high=df["High"][-50:],
+        low=df["Low"][-50:], close=df["Close"][-50:]
+    )
+    fig.update_layout(height=400,xaxis_rangeslider_visible=False)
+    chart_ph.plotly_chart(fig,use_container_width=True)
+    # Journal
+    if st.session_state.journal:
+        journal_ph.subheader("📓 Trade Journal")
+        journal_df=pd.DataFrame(st.session_state.journal)
+        st.dataframe(journal_df.style.format({"entry":"${:.2f}","sl":"${:.2f}","risk_$":"${:.2f}"}))
+
+# -----------------------------
+# RUN
+# -----------------------------
+if refresh_btn:
+    main()
+else:
+    main()
