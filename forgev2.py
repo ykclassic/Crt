@@ -4,13 +4,13 @@ import numpy as np
 import ccxt
 import plotly.graph_objects as go
 from datetime import datetime, timezone
-from streamlit_autorefresh import st_autorefresh
+import time
 
 # =========================
 # CONFIG
 # =========================
 st.set_page_config(page_title="ProfitForge Pro XT", layout="wide")
-st.title("🔥 ProfitForge Pro — Live Signals + Trade Management + Backtesting")
+st.title("🔥 ProfitForge Pro — Live Signals + Trade Management")
 
 # =========================
 # TRADING SESSION
@@ -45,7 +45,7 @@ with col3:
 
 balance = st.number_input("Account Balance ($)", min_value=100.0, value=10000.0, key="balance")
 risk_pct = st.slider("Risk per Trade (%)", 0.5, 5.0, 1.0, 0.1, key="risk")
-refresh_interval = st.slider("Refresh interval (seconds)", 2, 10, 3, key="refresh_interval")
+auto_refresh = st.checkbox("Auto-refresh every 5s", value=True)
 
 # =========================
 # INDICATORS
@@ -173,12 +173,14 @@ def calc_position(signal_dict,balance,risk_pct):
     return round(size,6),round(risk_amount,2)
 
 # =========================
-# AUTO-REFRESH
+# AUTO-REFRESH LOGIC
 # =========================
-st_autorefresh(interval=refresh_interval*1000,key="refresh_autorefresh")
+if auto_refresh:
+    time.sleep(5)
+    st.experimental_rerun()
 
 # =========================
-# FETCH DATA WITH FALLBACK
+# FETCH DATA
 # =========================
 exchanges=[exchange_id]+[ex for ex in ["binance","bitget","gateio","xt"] if ex!=exchange_id]
 df=pd.DataFrame()
