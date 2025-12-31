@@ -8,3 +8,4 @@ matplotlib
 ccxt
 ta
 scikit-learn
+tensorflow
