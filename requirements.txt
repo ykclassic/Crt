@@ -9,3 +9,4 @@ ccxt
 ta
 scikit-learn
 tensorflow
+telegram
