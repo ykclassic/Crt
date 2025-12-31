@@ -173,7 +173,7 @@ def calc_position(signal_dict,balance,risk_pct):
     return round(size,6),round(risk_amount,2)
 
 # =========================
-# AUTO-REFRESH LOGIC
+# AUTO-REFRESH
 # =========================
 if auto_refresh:
     time.sleep(5)
