@@ -1,10 +1,9 @@
-# profitforge_ccxt.py
+# profitforge_ccxt_v2.py
 import streamlit as st
 import ccxt
 import pandas as pd
 import numpy as np
-from datetime import datetime, timezone
-import time
+from datetime import datetime, timedelta, timezone
 import plotly.graph_objects as go
 
 # -----------------------------
@@ -17,10 +16,12 @@ st.title("🔥 ProfitForge Pro - CCXT Polling Edition")
 # PLACEHOLDERS
 # -----------------------------
 session_ph = st.empty()
+time_ph = st.empty()
 price_ph = st.empty()
 signal_ph = st.empty()
-chart_ph = st.empty()
+levels_ph = st.empty()
 info_ph = st.empty()
+chart_ph = st.empty()
 journal_ph = st.empty()
 
 # -----------------------------
@@ -155,6 +156,8 @@ def log_trade(signal,size,levels):
         "signal":signal,
         "entry":levels['entry'],
         "sl":levels['sl'],
+        "tp1":levels['tp1'],
+        "tp2":levels['tp2'],
         "size":size,
         "risk_$":size*abs(levels['entry']-levels['sl']),
         "status":"OPEN"
@@ -183,21 +186,33 @@ def main():
     # Session
     session_name,color=get_session()
     session_ph.markdown(f"<div style='text-align:center;color:white;background:{color};padding:8px;border-radius:12px;'>{session_name}</div>",unsafe_allow_html=True)
+
+    # Current time UTC+1
+    utc_now=datetime.now(timezone.utc)+timedelta(hours=1)
+    time_ph.markdown(f"<div style='text-align:center;color:#00FF9F;font-size:16px;'>Current Time (UTC+1): {utc_now.strftime('%Y-%m-%d %H:%M:%S')}</div>",unsafe_allow_html=True)
+
     # Fetch data
     df=fetch_data(exchange_id,symbol,timeframe)
     if df.empty: return st.warning("No data available yet.")
+
     # Latest price
     live_price=df['Close'].iloc[-1]
     price_ph.markdown(f"<h2 style='text-align:center;color:#00FF9F;'>${live_price:,.2f}</h2>",unsafe_allow_html=True)
+
     # Signal
     signal,score,levels=generate_signal(df)
     signal_ph.markdown(f"<h3 style='text-align:center;color:#00FF9F;'>Signal: {signal} ({score}%)</h3>",unsafe_allow_html=True)
+
+    # Entry / SL / TP
+    if levels:
+        levels_ph.markdown(f"<div style='text-align:center;color:#FFDD00;'>Entry: {levels['entry']:.2f} | SL: {levels['sl']:.2f} | TP1: {levels['tp1']:.2f} | TP2: {levels['tp2']:.2f}</div>",unsafe_allow_html=True)
+
     # Position & Risk
     size,risk_amount=calculate_position(levels,balance,risk_pct)
-    info_ph.write(f"Entry: {levels['entry']:.2f}, SL: {levels['sl']:.2f}, TP1: {levels['tp1']:.2f}, TP2: {levels['tp2']:.2f}, ATR: {levels['atr']:.2f}")
     info_ph.write(f"Size: {size}, Risk: ${risk_amount:.2f}")
     if st.button("Log Trade"):
         log_trade(signal,size,levels)
+
     # Chart
     fig=go.Figure()
     fig.add_candlestick(
@@ -207,16 +222,14 @@ def main():
     )
     fig.update_layout(height=400,xaxis_rangeslider_visible=False)
     chart_ph.plotly_chart(fig,use_container_width=True)
+
     # Journal
     if st.session_state.journal:
         journal_ph.subheader("📓 Trade Journal")
         journal_df=pd.DataFrame(st.session_state.journal)
-        st.dataframe(journal_df.style.format({"entry":"${:.2f}","sl":"${:.2f}","risk_$":"${:.2f}"}))
+        st.dataframe(journal_df.style.format({"entry":"${:.2f}","sl":"${:.2f}","tp1":"${:.2f}","tp2":"${:.2f}","risk_$":"${:.2f}"}))
 
 # -----------------------------
 # RUN
 # -----------------------------
-if refresh_btn:
-    main()
-else:
-    main()
+main()
