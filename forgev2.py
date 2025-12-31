@@ -29,8 +29,8 @@ def get_session():
     else:
         return "Quiet Hours", "Low volume", "#888888"
 
-session_name,note,color=get_session()
-st.markdown(f"<h3 style='text-align:center;color:{color};'>💹 {session_name} — {note}</h3>",unsafe_allow_html=True)
+session_name, note, color = get_session()
+st.markdown(f"<h3 style='text-align:center;color:{color};'>💹 {session_name} — {note}</h3>", unsafe_allow_html=True)
 
 # =========================
 # USER INPUTS
@@ -199,15 +199,26 @@ if df.empty or live_price is None:
 # =========================
 # DISPLAY LIVE PRICE + SIGNAL
 # =========================
-prev_close=df['Close'].iloc[-2] if len(df)>1 else live_price
-st.metric(label=f"Live {symbol} on {exchange_id.upper()}", value=f"${live_price:,.2f}", delta=f"{live_price-prev_close:.2f}", key=f"metric_{symbol}")
+if live_price is None:
+    st.warning(f"Live price not available for {symbol} on {exchange_id.upper()}")
+else:
+    prev_close = df['Close'].iloc[-2] if len(df) > 1 else live_price
+    try: delta = live_price - prev_close
+    except TypeError: delta = 0.0
+    st.metric(
+        label=f"Live {symbol} on {exchange_id.upper()}",
+        value=f"${live_price:,.2f}",
+        delta=f"{delta:.2f}",
+        key=f"metric_{symbol}"
+    )
 
-signal,score,levels=generate_signal(df)
-st.markdown(f"<h2 style='text-align:center;color:#00FF9F;'>Signal: {signal} ({score}%)</h2>",unsafe_allow_html=True)
+signal, score, levels = generate_signal(df)
+st.markdown(f"<h2 style='text-align:center;color:#00FF9F;'>Signal: {signal} ({score}%)</h2>", unsafe_allow_html=True)
+
 if levels:
     size,risk_amount=calc_position(levels,balance,risk_pct)
-    st.write(f"Entry: ${levels['entry']:.2f}, SL: ${levels['sl']:.2f}, TP1: ${levels['tp1']:.2f}, TP2: ${levels['tp2']:.2f}, ATR: {levels['atr']:.2f}", key=f"levels_{symbol}")
-    st.write(f"Recommended Size: {size} {symbol.split('/')[0]}, Risk: ${risk_amount:.2f}", key=f"size_{symbol}")
+    st.write(f"Entry: ${levels['entry']:.2f}, SL: ${levels['sl']:.2f}, TP1: ${levels['tp1']:.2f}, TP2: ${levels['tp2']:.2f}, ATR: {levels['atr']:.2f}")
+    st.write(f"Recommended Size: {size} {symbol.split('/')[0]}, Risk: ${risk_amount:.2f}")
 
 # =========================
 # CANDLESTICK CHART
@@ -221,5 +232,5 @@ fig.add_candlestick(
     close=df["Close"][-100:],
     name="Price"
 )
-fig.update_layout(height=500,xaxis_rangeslider_visible=False)
-st.plotly_chart(fig,use_container_width=True,key=f"chart_{symbol}_{timeframe}")
+fig.update_layout(height=500, xaxis_rangeslider_visible=False)
+st.plotly_chart(fig, use_container_width=True, key=f"chart_{symbol}_{timeframe}")
