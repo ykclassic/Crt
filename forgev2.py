@@ -199,20 +199,28 @@ if df.empty or live_price is None:
 # =========================
 # DISPLAY LIVE PRICE + SIGNAL
 # =========================
-if live_price is None:
+try:
+    live_price_val=float(live_price)
+except:
+    live_price_val=None
+
+try:
+    prev_close_val=float(df['Close'].iloc[-2]) if len(df)>1 else live_price_val
+except:
+    prev_close_val=None
+
+if live_price_val is None or prev_close_val is None:
     st.warning(f"Live price not available for {symbol} on {exchange_id.upper()}")
 else:
-    prev_close = df['Close'].iloc[-2] if len(df) > 1 else live_price
-    try: delta = live_price - prev_close
-    except TypeError: delta = 0.0
+    delta=live_price_val-prev_close_val
     st.metric(
         label=f"Live {symbol} on {exchange_id.upper()}",
-        value=f"${live_price:,.2f}",
-        delta=f"{delta:.2f}",
+        value=f"${live_price_val:,.2f}",
+        delta=f"{delta:,.2f}",
         key=f"metric_{symbol}"
     )
 
-signal, score, levels = generate_signal(df)
+signal, score, levels=generate_signal(df)
 st.markdown(f"<h2 style='text-align:center;color:#00FF9F;'>Signal: {signal} ({score}%)</h2>", unsafe_allow_html=True)
 
 if levels:
