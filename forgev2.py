@@ -154,9 +154,7 @@ async def main():
         df.set_index("timestamp",inplace=True)
     except: pass
 
-    # Chart placeholder
     chart_placeholder = st.empty()
-    metric_placeholder = st.empty()
     signal_placeholder = st.empty()
     info_placeholder = st.empty()
 
@@ -168,23 +166,16 @@ async def main():
             price=None
 
         if price:
-            # Update df
             new_row={"Open":price,"High":price,"Low":price,"Close":price,"Volume":ticker.get("quoteVolume",0)}
             df=df.append(pd.DataFrame([new_row], index=[datetime.utcnow()]))
             if len(df)>300: df=df.iloc[-300:]
 
             signal,score,levels=generate_signal(df)
 
-            # Metric
-            prev_close=df['Close'].iloc[-2] if len(df)>1 else price
-            delta_val=price-prev_close if prev_close else 0
-            metric_placeholder.metric(f"Live {symbol} on {exchange_id.upper()}",
-                                      f"${price:,.2f}", f"{delta_val:,.2f}")
-
-            # Signal
+            # Signal display
             signal_placeholder.markdown(f"<h2 style='text-align:center;color:#00FF9F;'>Signal: {signal} ({score}%)</h2>", unsafe_allow_html=True)
 
-            # Position
+            # Position info
             if levels:
                 size,risk_amount=calc_position(levels,balance,risk_pct)
                 info_placeholder.write(f"Entry: ${levels['entry']:.2f}, SL: ${levels['sl']:.2f}, TP1: ${levels['tp1']:.2f}, TP2: ${levels['tp2']:.2f}, ATR: {levels['atr']:.2f}")
@@ -203,7 +194,7 @@ async def main():
             fig.update_layout(height=500, xaxis_rangeslider_visible=False)
             chart_placeholder.plotly_chart(fig, use_container_width=True)
 
-        await asyncio.sleep(1)  # 1-second update interval
+        await asyncio.sleep(1)  # 1-second interval
 
 # =========================
 # RUN ASYNC
