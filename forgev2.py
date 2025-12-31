@@ -3,15 +3,31 @@ import pandas as pd
 import numpy as np
 import ccxt
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 
 # =========================
 # CONFIG
 # =========================
-st.set_page_config(page_title="ProfitForge Live", layout="wide")
+st.set_page_config(page_title="ProfitForge Live + Session", layout="wide")
+st.title("🔥 ProfitForge — Live Price & Session Edition")
 
-st.title("🔥 ProfitForge — Live Price Edition")
+# =========================
+# TRADING SESSION FUNCTION
+# =========================
+def get_session():
+    utc_now = datetime.now(timezone.utc)
+    hour = utc_now.hour
+    if 0 <= hour < 8:
+        return "Asian Session", "Range-bound moves", "#FF8E53"
+    elif 8 <= hour < 12:
+        return "London Open", "Breakouts expected", "#667eea"
+    elif 12 <= hour < 16:
+        return "NY + London Overlap", "Highest volatility", "#764ba2"
+    elif 16 <= hour < 21:
+        return "New York Session", "Trend continuation", "#43E97B"
+    else:
+        return "Quiet Hours", "Low volume", "#888888"
 
 # =========================
 # USER SELECTIONS
@@ -57,6 +73,13 @@ def fetch_live_price(exchange_id, symbol):
 live_placeholder = st.empty()
 
 while True:
+    # Get trading session info
+    session_name, note, color = get_session()
+    st.markdown(
+        f"<h3 style='text-align:center; color:{color};'>💹 {session_name} — {note}</h3>",
+        unsafe_allow_html=True
+    )
+
     live_price = fetch_live_price(exchange_id, symbol)
     df = fetch_data(exchange_id, symbol, timeframe)
 
@@ -70,7 +93,7 @@ while True:
     else:
         live_placeholder.error("Failed to fetch live price.")
 
-    # Simple candlestick chart with last 100 candles
+    # Candlestick chart (last 100 candles)
     fig = go.Figure()
     fig.add_candlestick(
         x=df.index[-100:],
