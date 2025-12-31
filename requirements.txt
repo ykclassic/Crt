@@ -7,3 +7,4 @@ backtesting
 matplotlib
 ccxt
 ta
+scikit-learn
