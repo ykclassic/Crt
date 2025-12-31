@@ -30,8 +30,8 @@ horizon_days = st.sidebar.selectbox("Prediction Horizon (days)", [1, 7, 30])
 def fetch_data(symbol, timeframe, limit=2000):
     try:
         exchange = ccxt.xt({
-            "apiKey": "DUMMY_API_KEY",
-            "secret": "DUMMY_SECRET",
+            "apiKey": "e2613e3f-1a0d-4df1-b1e2-b03c09ee20c9",
+            "secret": "289116468a1562cd7a553e43b44baa54e1a8be83",
             "enableRateLimit": True,
             "options": {
                 "defaultType": "spot"
