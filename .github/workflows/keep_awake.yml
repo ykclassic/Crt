@@ -1,0 +1,17 @@
+name: Keep Streamlit Awake
+on:
+  schedule:
+    - cron: '0 */10 * * *' # Runs every 10 hours
+  workflow_dispatch: # Allows you to run it manually
+
+jobs:
+  auto_commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Create empty commit
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git commit --allow-empty -m "Keep-alive heartbeat"
+          git push
