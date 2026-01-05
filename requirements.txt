@@ -12,4 +12,3 @@ tensorflow
 telegram
 python-telegram-bot
 psutil
-sqlite3
