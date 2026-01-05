@@ -82,6 +82,18 @@ with col_res:
 
 st.write("---")
 
+import os
+
+# --- TEMPORARY DEBUGGER ---
+st.write("### 📂 Files Detected in /pages:")
+try:
+    files = os.listdir('pages')
+    st.code(files)
+except Exception as e:
+    st.error(f"Cannot access pages folder: {e}")
+# --------------------------
+
+
 # 7. Aegis & Nexus App Grid (The 7 Modules)
 # Format: [Icon, Display Name, Description, Filename]
 apps = [
