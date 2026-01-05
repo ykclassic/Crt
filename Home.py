@@ -2,32 +2,79 @@ import streamlit as st
 import time
 import psutil
 import requests
-import os
+import sqlite3
+from datetime import datetime
 
 # 1. Page Configuration
 st.set_page_config(page_title="Aegis OS", page_icon="🛡️", layout="wide")
 
-# 2. Live Data Fetcher
+# 2. Database Integration (Feature 4)
+def init_db():
+    conn = sqlite3.connect('aegis_system.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS logs 
+                 (timestamp TEXT, user_level TEXT, event TEXT)''')
+    conn.commit()
+    conn.close()
+
+def add_log(user_level, event):
+    conn = sqlite3.connect('aegis_system.db')
+    c = conn.cursor()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c.execute("INSERT INTO logs VALUES (?, ?, ?)", (now, user_level, event))
+    conn.commit()
+    conn.close()
+
+def get_logs():
+    conn = sqlite3.connect('aegis_system.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM logs ORDER BY timestamp DESC LIMIT 10")
+    data = c.fetchall()
+    conn.close()
+    return data
+
+init_db()
+
+# 3. Live Data & Notifications (Feature 3)
 def get_live_prices():
     try:
         url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true"
         response = requests.get(url).json()
         btc = response['bitcoin']['usd']
         btc_chg = response['bitcoin']['usd_24h_change']
-        eth = response['ethereum']['usd']
-        eth_chg = response['ethereum']['usd_24h_change']
-        return btc, btc_chg, eth, eth_chg
+        return btc, btc_chg
     except:
-        return "N/A", 0, "N/A", 0
+        return "N/A", 0
 
-# 3. Theme Engine State
+# 4. Auth Logic & User Levels (Feature 2)
+# User Levels: Admin (All Access), Analyst (Limited), Observer (Read-only)
+PASSCODES = {
+    "admin123": "Admin",
+    "analyst456": "Analyst",
+    "view789": "Observer"
+}
+
+if "authenticated" not in st.session_state:
+    st.title("🛡️ Aegis Secure Terminal")
+    pwd = st.text_input("Enter Authorization Key:", type="password")
+    if st.button("Access System"):
+        if pwd in PASSCODES:
+            st.session_state.authenticated = True
+            st.session_state.user_level = PASSCODES[pwd]
+            add_log(st.session_state.user_level, "System Login Successful")
+            st.toast(f"Welcome, {st.session_state.user_level} Level Access Granted", icon="🔐")
+            st.rerun()
+        else:
+            st.error("Access Denied: Invalid Key")
+    st.stop()
+
+# 5. Theme & Styling
 if 'matrix_mode' not in st.session_state:
     st.session_state.matrix_mode = False
 
 theme_color = "#00ff00" if st.session_state.matrix_mode else "#4F8BF9"
 bg_color = "#000000" if st.session_state.matrix_mode else "#0e1117"
 
-# Custom CSS
 st.markdown(f"""
     <style>
     footer {{visibility: hidden;}}
@@ -39,96 +86,74 @@ st.markdown(f"""
     </style>
     """, unsafe_allow_html=True)
 
-# 4. Security Gate Logic
-if "authenticated" not in st.session_state:
-    st.title("🛡️ Aegis Secure Terminal")
-    pwd = st.text_input("Enter Authorization Key:", type="password")
-    if st.button("Access System"):
-        if pwd == "forge2026":
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("Access Denied: Invalid Key")
-    st.stop()
-
-# --- THE FOLLOWING CODE ONLY RUNS IF AUTHENTICATED ---
-
-# 5. Global Analytics Sidebar
+# 6. Sidebar (Intel & Settings)
 with st.sidebar:
     st.title("📡 Live Intel")
-    btc, btc_chg, eth, eth_chg = get_live_prices()
+    btc, btc_chg = get_live_prices()
     st.metric("BTC/USD", f"${btc:,}" if isinstance(btc, int) else btc, f"{btc_chg:.2f}%")
-    st.metric("ETH/USD", f"${eth:,}" if isinstance(eth, int) else eth, f"{eth_chg:.2f}%")
+    
+    # Simple Notification Trigger (Feature 3)
+    if btc_chg > 2:
+        st.toast(f"Market Alert: BTC is up {btc_chg:.2f}%!", icon="📈")
+    elif btc_chg < -2:
+        st.toast(f"Market Alert: BTC is down {btc_chg:.2f}%!", icon="📉")
+
     st.write("---")
-    if st.toggle("Matrix Mode (Cyberpunk)", value=st.session_state.matrix_mode):
+    st.write(f"Logged in as: **{st.session_state.user_level}**")
+    
+    if st.toggle("Matrix Mode", value=st.session_state.matrix_mode):
         st.session_state.matrix_mode = True
     else:
         st.session_state.matrix_mode = False
     
     if st.button("Secure Logout", use_container_width=True):
+        add_log(st.session_state.user_level, "System Logout")
         del st.session_state.authenticated
         st.rerun()
 
-# 6. Resource Monitor & Header
+# 7. Header & Resource Monitor
 col_main, col_res = st.columns([4, 1])
-
 with col_main:
     st.title("🛡️ Aegis Command Center")
-    st.write(f"Session Active | Time: {time.strftime('%H:%M:%S')} | Env: **Production**")
+    st.write(f"Access Level: {st.session_state.user_level} | {time.strftime('%H:%M:%S')}")
 
 with col_res:
     with st.container(border=True):
         cpu = psutil.cpu_percent()
         st.write(f"💻 CPU: {cpu}%")
         st.progress(cpu/100)
-        mem = psutil.virtual_memory().percent
-        st.write(f"🧠 RAM: {mem}%")
-        st.progress(mem/100)
 
 st.write("---")
 
-# 7. Aegis & Nexus App Grid (The 7 Modules)
-# Defined inside the auth block to ensure scope is available for the loop
+# 8. Filtered App Grid based on User Level (Feature 2)
+# Admin: All | Analyst: Auto, Wealth, Risk, Neural | Observer: Wealth, Risk
 apps = [
-    ["🤖", "Aegis Auto", "Automated execution and chat bot.", "Aegis_Auto"],
-    ["🧠", "Nexus Neural", "Deep learning and predictive models.", "Nexus_Neural"],
-    ["💰", "Aegis Wealth", "Core profit and portfolio analytics.", "Aegis_Wealth"],
-    ["📈", "Aegis Legacy", "Stable analytical version (Legacy).", "Aegis_Legacy"],
-    ["⚙️", "Nexus Core", "System utility and architecture config.", "Nexus_Core"],
-    ["🧬", "Neural Profit", "Multi-layer financial modeling logic.", "Neural_Profit"],
-    ["📉", "Aegis Risk", "Market volatility and exposure scanner.", "Aegis_Risk"]
+    ["🤖", "Aegis Auto", "Automated bot.", "Aegis_Auto", ["Admin", "Analyst"]],
+    ["🧠", "Nexus Neural", "Deep learning.", "Nexus_Neural", ["Admin", "Analyst"]],
+    ["💰", "Aegis Wealth", "Wealth analytics.", "Aegis_Wealth", ["Admin", "Analyst", "Observer"]],
+    ["📈", "Aegis Legacy", "Stable version.", "Aegis_Legacy", ["Admin"]],
+    ["⚙️", "Nexus Core", "System config.", "Nexus_Core", ["Admin"]],
+    ["🧬", "Neural Profit", "Financial logic.", "Neural_Profit", ["Admin", "Analyst"]],
+    ["📉", "Aegis Risk", "Exposure scanner.", "Aegis_Risk", ["Admin", "Analyst", "Observer"]]
 ]
 
 cols = st.columns(3)
-for index, app in enumerate(apps):
-    icon, name, desc, filename = app
+visible_apps = [a for a in apps if st.session_state.user_level in a[4]]
+
+for index, app in enumerate(visible_apps):
+    icon, name, desc, filename, roles = app
     with cols[index % 3]:
         with st.container(border=True):
             st.markdown(f"### {icon} {name}")
-            st.markdown("<span class='status-online'>● SYSTEM OPERATIONAL</span>", unsafe_allow_html=True)
+            st.markdown("<span class='status-online'>● ACTIVE</span>", unsafe_allow_html=True)
             st.write(desc)
-            
-            # Robust Launch Logic
             if st.button(f"Launch {name}", key=f"btn_{filename}", use_container_width=True):
-                try:
-                    # Method 1: Path from Root
-                    st.switch_page(f"pages/{filename}.py")
-                except Exception:
-                    try:
-                        # Method 2: Filename only (Some Streamlit versions)
-                        st.switch_page(f"{filename}.py")
-                    except Exception as e:
-                        st.error(f"Critical Error: Could not load {filename}.py")
-                        st.toast(f"System Message: {str(e)}")
+                add_log(st.session_state.user_level, f"Launched {name}")
+                st.switch_page(f"pages/{filename}.py")
 
-# 8. Logs Footer
+# 9. Persistent Database Logs (Feature 4)
 st.write("---")
-with st.expander("📂 Access Logs"):
-    st.code(f"""
-    [SYS] {time.strftime('%Y-%m-%d')} Connection established.
-    [NET] Secure Handshake via SSL.
-    [DB] 7/7 Aegis-Nexus modules mapped.
-    [LOG] System monitoring active...
-    """, language="bash")
-
-st.caption("Developed by TechSolute | Aegis Unified version")
+with st.expander("📂 Persistent System Logs"):
+    logs = get_logs()
+    for log in logs:
+        st.text(f"[{log[0]}] {log[1]}: {log[2]}")
