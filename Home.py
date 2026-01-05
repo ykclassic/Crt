@@ -62,12 +62,7 @@ if "authenticated" not in st.session_state:
     st.stop()
 
 # 5. Theme
-st.markdown("""
-    <style>
-    .stApp {background-color: #0e1117;}
-    .status-online { color: #4F8BF9; font-weight: bold; font-size: 0.8rem; }
-    </style>
-    """, unsafe_allow_html=True)
+st.markdown("<style>.stApp {background-color: #0e1117;}</style>", unsafe_allow_html=True)
 
 # 6. Sidebar
 with st.sidebar:
@@ -85,31 +80,26 @@ st.title("🛡️ Aegis Command Center")
 st.write(f"Environment: Production | {time.strftime('%H:%M:%S')}")
 st.write("---")
 
-# 8. App Grid (Unified List)
+# 8. App Grid
 apps = [
-    ["🤖", "Aegis Auto", "Accuracy Optimization.", "Aegis_Auto", ["Admin", "Analyst"]],
-    ["🧠", "Nexus Neural", "Deep Learning Predictions.", "Nexus_Neural", ["Admin", "Analyst"]],
-    ["💰", "Aegis Wealth", "Profit Analytics.", "Aegis_Wealth", ["Admin", "Analyst", "Observer"]],
-    ["📡", "Nexus Signal", "MTF Confluence Logic.", "Nexus_Signal", ["Admin", "Analyst"]],
-    ["⚙️", "Nexus Core", "System Utility.", "Nexus_Core", ["Admin"]],
-    ["🧬", "Neural Profit", "Deep Learning Logic.", "Neural_Profit", ["Admin", "Analyst"]],
-    ["📉", "Aegis Risk", "Market Volatility Scanner.", "Aegis_Risk", ["Admin", "Analyst", "Observer"]]
+    ["🤖", "Aegis Auto", "Aegis_Auto", ["Admin", "Analyst"]],
+    ["🧠", "Nexus Neural", "Nexus_Neural", ["Admin", "Analyst"]],
+    ["💰", "Aegis Wealth", "Aegis_Wealth", ["Admin", "Analyst", "Observer"]],
+    ["📡", "Nexus Signal", "Nexus_Signal", ["Admin", "Analyst"]],
+    ["⚙️", "Nexus Core", "Nexus_Core", ["Admin"]],
+    ["🧬", "Neural Profit", "Neural_Profit", ["Admin", "Analyst"]],
+    ["📉", "Aegis Risk", "Aegis_Risk", ["Admin", "Analyst", "Observer"]]
 ]
 
-visible_apps = [a for a in apps if st.session_state.user_level in a[4]]
+visible_apps = [a for a in apps if st.session_state.user_level in a[3]]
 cols = st.columns(3)
 for index, app in enumerate(visible_apps):
-    icon, name, desc, filename, roles = app
+    icon, name, filename, roles = app
     with cols[index % 3]:
         with st.container(border=True):
             st.markdown(f"### {icon} {name}")
-            st.write(desc)
-            # IMPORTANT: The filename below must match the file in /pages exactly
             if st.button(f"Launch {name}", key=f"btn_{filename}", use_container_width=True):
                 add_log(st.session_state.user_level, f"Launched {name}")
-                try:
-                    st.switch_page(f"pages/{filename}.py")
-                except:
-                    st.error(f"File pages/{filename}.py not found on GitHub.")
+                st.switch_page(f"pages/{filename}.py")
 
 st.caption("Aegis Unified Environment v3.3")
