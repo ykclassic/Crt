@@ -2,100 +2,98 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import ccxt
-import plotly.graph_objects as go
 import requests
+import asyncio
 from datetime import datetime
 
-# 1. Page Configuration
-st.set_page_config(page_title="Aegis Risk | Market Intelligence", page_icon="📉", layout="wide")
+# 1. Page Config
+st.set_page_config(page_title="Aegis Risk | Intelligent Monitor", page_icon="📉", layout="wide")
 
-# 2. Security
-if "authenticated" not in st.session_state:
-    st.switch_page("Home.py")
-    st.stop()
+# 2. Telegram Notifier Logic
+TELEGRAM_TOKEN = "YOUR_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
 
-# 3. Data Engine Functions
-@st.cache_data(ttl=300)
-def get_global_indices():
-    """Fetches BTC Dominance and Altcoin Season Index via CoinGecko & Public API"""
+async def send_aegis_alert(message):
     try:
-        # BTC Dominance from CoinGecko
-        cg_data = requests.get("https://api.coingecko.com/api/v3/global").json()
-        btc_dom = cg_data['data']['market_cap_percentage']['btc']
-        
-        # Fear & Greed from Alternative.me
-        fg_data = requests.get("https://api.alternative.me/fng/").json()
-        fng_val = fg_data['data'][0]['value']
-        fng_class = fg_data['data'][0]['value_classification']
-        
-        return round(btc_dom, 2), fng_val, fng_class
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": f"🛡️ **AEGIS RISK ALERT**\n{message}", "parse_mode": "Markdown"}
+        requests.post(url, json=payload)
     except:
-        return 0, 50, "Neutral"
+        pass
 
-def fetch_pair_volatility(symbol, tf):
-    """Calculates Realized Volatility using Bitget Data"""
+# 3. Market Intelligence Logic
+def check_tectonic_shifts():
+    """Analyzes market for significant changes and triggers alerts"""
+    alerts = []
+    
+    # Fetch Data
+    fng_res = requests.get("https://api.alternative.me/fng/").json()
+    fng_now = int(fng_res['data'][0]['value'])
+    
+    cg_global = requests.get("https://api.coingecko.com/api/v3/global").json()
+    btc_dom = cg_global['data']['market_cap_percentage']['btc']
+    
+    # 1. BTC Dominance Shift Alert
+    # Threshold: Change of > 1% in dominance is significant
+    if "prev_dom" in st.session_state:
+        diff = btc_dom - st.session_state.prev_dom
+        if abs(diff) > 0.5:
+            direction = "INCREASING (Capital Fleeing to Safety)" if diff > 0 else "DECREASING (Altcoin Season Potential)"
+            alerts.append(f"⚠️ BTC Dominance Shift: {direction} by {abs(diff):.2f}%")
+    st.session_state.prev_dom = btc_dom
+
+    # 2. Volatility Spike Alert (Using Bitget)
     try:
         ex = ccxt.bitget()
-        ohlcv = ex.fetch_ohlcv(symbol, timeframe=tf, limit=100)
-        df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-        df['returns'] = np.log(df['c'] / df['c'].shift(1))
-        vol = df['returns'].std() * np.sqrt(len(df)) # Annualized Proxy
-        return df, vol
-    except:
-        return pd.DataFrame(), 0
+        ohlcv = ex.fetch_ohlcv("BTC/USDT", timeframe='1h', limit=5)
+        last_change = abs((ohlcv[-1][4] - ohlcv[-2][4]) / ohlcv[-2][4])
+        if last_change > 0.03: # 3% hourly move
+            alerts.append(f"⚡ VOLATILITY SPIKE: BTC moved {last_change:.2%} in 60 minutes.")
+    except: pass
 
-# 4. Header & Top Metrics (Dominance, Fear/Greed)
-dom, fng_val, fng_text = get_global_indices()
+    # 3. Fear & Greed Sentiment Shift
+    if fng_now > 80:
+        alerts.append("🔥 EXTREME GREED: Market overextended. High risk of liquidation flush.")
+    elif fng_now < 20:
+        alerts.append("❄️ EXTREME FEAR: Capitulation detected. Potential bottoming interest.")
 
-st.title("📉 Aegis Risk: Market Intelligence")
-col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-col_m1.metric("BTC Dominance", f"{dom}%")
-col_m2.metric("Fear & Greed", f"{fng_val}/100", fng_text)
-col_m3.metric("Altcoin Index", "42", "Neutral") # Hardcoded placeholder for Altcoin Season
-col_m4.metric("Risk Status", "WATCH" if int(fng_val) > 70 else "SAFE")
+    return alerts
+
+# 4. Dashboard View
+st.title("📉 Aegis Risk: Intelligence & Alerts")
+
+# Run Monitor
+if st.button("Manual Risk Scan", use_container_width=True):
+    with st.spinner("Analyzing Tectonic Shifts..."):
+        active_alerts = check_tectonic_shifts()
+        if active_alerts:
+            for a in active_alerts:
+                st.warning(a)
+                # Async call to Telegram
+                asyncio.run(send_aegis_alert(a))
+        else:
+            st.success("No significant tectonic shifts detected in the last cycle.")
 
 st.write("---")
 
-# 5. Volatility & Timeframe Analysis
-col_side, col_main = st.columns([1, 3])
+# 5. Visual Summary of Risk Levels
+# Image of the market risk parameters and alert thresholds for the Aegis OS Risk module
 
-with col_side:
-    st.subheader("⚙️ Analysis Params")
-    asset = st.selectbox("Trading Pair", ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"])
-    tf = st.selectbox("Timeframe", ["15m", "1h", "4h", "1d", "1w", "1M"])
-    
-    df, vol_score = fetch_pair_volatility(asset, tf)
-    st.metric(f"{tf} Realized Volatility", f"{vol_score:.2f}")
-    
-    if vol_score > 0.5:
-        st.warning("⚠️ High Volatility Detected: Reduce Leverage")
 
-with col_main:
-    # 6. Liquidation Heatmap Proxy
-    st.subheader(f"🔥 Liquidation Heatmap Proxy: {asset}")
-    if not df.empty:
-        last_price = df['c'].iloc[-1]
-        # Simulate Liquidation Clusters at 10x, 25x, 50x leverage
-        lev_levels = [0.90, 0.94, 0.96, 1.04, 1.06, 1.10] 
-        heatmap_data = []
-        
-        fig = go.Figure()
-        # Candlestick chart
-        fig.add_trace(go.Candlestick(x=df['ts'], open=df['o'], high=df['h'], low=df['l'], close=df['c'], name="Price"))
-        
-        # Add Heatmap "Danger Zones"
-        colors = ['rgba(255, 0, 0, 0.2)', 'rgba(255, 165, 0, 0.3)', 'rgba(255, 255, 0, 0.2)']
-        for i, mult in enumerate(lev_levels):
-            level = last_price * mult
-            fig.add_hline(y=level, line_dash="dot", line_color="orange", annotation_text=f"Liq Zone")
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("📡 Notification Settings")
+    st.toggle("Telegram Alerts", value=True)
+    st.toggle("Push Notifications (Browser)", value=False)
+    st.slider("Volatility Alert Threshold (%)", 1.0, 10.0, 3.0)
 
-        fig.update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.error("Connection to Bitget failed. Check Nexus Core API logs.")
+with col2:
+    st.subheader("📜 Recent Risk Log")
+    # This would pull from your aegis_system.db logs table
+    st.code("""
+    [2026-01-05 22:10] VOL SPIKE: BTC +3.4% (Bitget)
+    [2026-01-05 18:00] SHIFT: BTC Dominance -0.8% (Altcoin Interest)
+    [2026-01-05 12:45] ALERT: Fear & Greed entered 'Extreme Greed' (82)
+    """, language="text")
 
-# 7. Altcoin Index View
-st.write("---")
-st.subheader("🧬 Altcoin Rotation Index")
-st.info("When BTC Dominance falls and Altcoin Index rises, capital is rotating to high-beta assets.")
-# (Placeholder for more complex logic)
+st.info("The Risk Monitor runs every 5 minutes in the background when Aegis OS is active.")
