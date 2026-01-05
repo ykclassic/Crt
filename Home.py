@@ -30,7 +30,7 @@ def add_log(user_level, event):
 def get_logs():
     try:
         conn = sqlite3.connect('aegis_system.db', check_same_thread=False)
-        df = pd.read_sql_query("SELECT * BY timestamp DESC", conn)
+        df = pd.read_sql_query("SELECT * FROM logs ORDER BY timestamp DESC", conn)
         conn.close()
         return df
     except:
@@ -62,10 +62,12 @@ if "authenticated" not in st.session_state:
     st.stop()
 
 # 5. Theme
-theme_color = "#00ff00" if st.session_state.get('matrix_mode') else "#4F8BF9"
-bg_color = "#000000" if st.session_state.get('matrix_mode') else "#0e1117"
-
-st.markdown(f"<style>.stApp {{background-color: {bg_color};}}</style>", unsafe_allow_html=True)
+st.markdown("""
+    <style>
+    .stApp {background-color: #0e1117;}
+    .status-online { color: #4F8BF9; font-weight: bold; font-size: 0.8rem; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # 6. Sidebar
 with st.sidebar:
@@ -74,7 +76,7 @@ with st.sidebar:
     st.metric("BTC/USD", f"${btc:,}" if isinstance(btc, int) else btc, f"{btc_chg:.2f}%")
     st.write("---")
     st.write(f"Identity: **{st.session_state.user_level}**")
-    if st.button("Secure Logout", use_container_width=True):
+    if st.button("Logout", use_container_width=True):
         del st.session_state.authenticated
         st.rerun()
 
@@ -83,14 +85,14 @@ st.title("🛡️ Aegis Command Center")
 st.write(f"Environment: Production | {time.strftime('%H:%M:%S')}")
 st.write("---")
 
-# 8. App Grid (Including the new Nexus Signal)
+# 8. App Grid (Unified List)
 apps = [
-    ["🤖", "Aegis Auto", "Accuracy Optimization & Signal Filtering.", "Aegis_Auto", ["Admin", "Analyst"]],
+    ["🤖", "Aegis Auto", "Accuracy Optimization.", "Aegis_Auto", ["Admin", "Analyst"]],
     ["🧠", "Nexus Neural", "Deep Learning Predictions.", "Nexus_Neural", ["Admin", "Analyst"]],
-    ["💰", "Aegis Wealth", "Profit & Portfolio Analytics.", "Aegis_Wealth", ["Admin", "Analyst", "Observer"]],
-    ["📡", "Nexus Signal", "MTF Confluence & Price Targeting.", "Nexus_Signal", ["Admin", "Analyst"]],
+    ["💰", "Aegis Wealth", "Profit Analytics.", "Aegis_Wealth", ["Admin", "Analyst", "Observer"]],
+    ["📡", "Nexus Signal", "MTF Confluence Logic.", "Nexus_Signal", ["Admin", "Analyst"]],
     ["⚙️", "Nexus Core", "System Utility.", "Nexus_Core", ["Admin"]],
-    ["🧬", "Neural Profit", "Deep Learning Finance Logic.", "Neural_Profit", ["Admin", "Analyst"]],
+    ["🧬", "Neural Profit", "Deep Learning Logic.", "Neural_Profit", ["Admin", "Analyst"]],
     ["📉", "Aegis Risk", "Market Volatility Scanner.", "Aegis_Risk", ["Admin", "Analyst", "Observer"]]
 ]
 
@@ -102,8 +104,12 @@ for index, app in enumerate(visible_apps):
         with st.container(border=True):
             st.markdown(f"### {icon} {name}")
             st.write(desc)
+            # IMPORTANT: The filename below must match the file in /pages exactly
             if st.button(f"Launch {name}", key=f"btn_{filename}", use_container_width=True):
                 add_log(st.session_state.user_level, f"Launched {name}")
-                st.switch_page(f"pages/{filename}.py")
+                try:
+                    st.switch_page(f"pages/{filename}.py")
+                except:
+                    st.error(f"File pages/{filename}.py not found on GitHub.")
 
 st.caption("Aegis Unified Environment v3.3")
