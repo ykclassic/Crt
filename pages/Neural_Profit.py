@@ -200,3 +200,4 @@ else:
         st.warning("📉 Model expects strong downward move")
 
 st.caption("CryptoForge Lite • Powered by scikit-learn • Fast • Reliable • December 27, 2025")
+
