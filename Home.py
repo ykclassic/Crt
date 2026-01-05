@@ -1,11 +1,9 @@
 import streamlit as st
 import time
-import psutil
 import requests
 import sqlite3
 import pandas as pd
 from datetime import datetime
-import os
 
 # 1. Page Configuration
 st.set_page_config(page_title="Aegis OS", page_icon="🛡️", layout="wide")
@@ -26,15 +24,6 @@ def add_log(user_level, event):
     c.execute("INSERT INTO logs VALUES (?, ?, ?)", (now, user_level, event))
     conn.commit()
     conn.close()
-
-def get_logs():
-    try:
-        conn = sqlite3.connect('aegis_system.db', check_same_thread=False)
-        df = pd.read_sql_query("SELECT * FROM logs ORDER BY timestamp DESC", conn)
-        conn.close()
-        return df
-    except:
-        return pd.DataFrame(columns=["timestamp", "user_level", "event"])
 
 init_db()
 
@@ -61,8 +50,15 @@ if "authenticated" not in st.session_state:
             st.rerun()
     st.stop()
 
-# 5. Theme
-st.markdown("<style>.stApp {background-color: #0e1117;}</style>", unsafe_allow_html=True)
+# 5. Theme Styling
+st.markdown("""
+    <style>
+    .stApp {background-color: #0e1117;}
+    [data-testid="stVerticalBlock"] > div:has(div.stButton) {
+        line-height: 1.2;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 # 6. Sidebar
 with st.sidebar:
@@ -80,26 +76,50 @@ st.title("🛡️ Aegis Command Center")
 st.write(f"Environment: Production | {time.strftime('%H:%M:%S')}")
 st.write("---")
 
-# 8. App Grid
+# 8. App Grid with New Descriptions
+# Structure: [Icon, Name, Filename, Allowed Roles, Description]
 apps = [
-    ["🤖", "Aegis Auto", "Aegis_Auto", ["Admin", "Analyst"]],
-    ["🧠", "Nexus Neural", "Nexus_Neural", ["Admin", "Analyst"]],
-    ["💰", "Aegis Wealth", "Aegis_Wealth", ["Admin", "Analyst", "Observer"]],
-    ["📡", "Nexus Signal", "Nexus_Signal", ["Admin", "Analyst"]],
-    ["⚙️", "Nexus Core", "Nexus_Core", ["Admin"]],
-    ["🧬", "Neural Profit", "Neural_Profit", ["Admin", "Analyst"]],
-    ["📉", "Aegis Risk", "Aegis_Risk", ["Admin", "Analyst", "Observer"]]
+    ["🤖", "Aegis Auto", "Aegis_Auto", ["Admin", "Analyst"], 
+     "Algorithmic execution and accuracy optimization."],
+    
+    ["🧠", "Nexus Neural", "Nexus_Neural", ["Admin", "Analyst"], 
+     "Deep learning predictive models for market moves."],
+    
+    ["🛡️", "Aegis Wealth", "Aegis_Wealth", ["Admin", "Analyst", "Observer"], 
+     "Autonomous rebalancing and capital preservation shield."],
+    
+    ["📡", "Nexus Signal", "Nexus_Signal", ["Admin", "Analyst"], 
+     "Multi-timeframe confluence logic with chart targeting."],
+    
+    ["⚙️", "Nexus Core", "Nexus_Core", ["Admin"], 
+     "System utility, API vault, and database management."],
+    
+    ["🧬", "Neural Profit", "Neural_Profit", ["Admin", "Analyst"], 
+     "Advanced trend-following logic using neural networks."],
+    
+    ["📉", "Aegis Risk", "Aegis_Risk", ["Admin", "Analyst", "Observer"], 
+     "Global volatility scanner and drawdown protection."]
 ]
 
+# Filter apps based on user role
 visible_apps = [a for a in apps if st.session_state.user_level in a[3]]
+
+# 9. Render Grid
 cols = st.columns(3)
 for index, app in enumerate(visible_apps):
-    icon, name, filename, roles = app
+    icon, name, filename, roles, description = app
     with cols[index % 3]:
         with st.container(border=True):
             st.markdown(f"### {icon} {name}")
+            # The requested modification: Description underneath the name
+            st.caption(description) 
+            st.write("") # Spacer
+            
             if st.button(f"Launch {name}", key=f"btn_{filename}", use_container_width=True):
                 add_log(st.session_state.user_level, f"Launched {name}")
-                st.switch_page(f"pages/{filename}.py")
+                try:
+                    st.switch_page(f"pages/{filename}.py")
+                except:
+                    st.error(f"Error: pages/{filename}.py not found.")
 
-st.caption("Aegis Unified Environment v3.3")
+st.caption("Aegis Unified Environment v3.4 | Multi-Module Architecture")
