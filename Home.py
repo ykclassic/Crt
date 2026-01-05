@@ -1,26 +1,37 @@
 import streamlit as st
 import time
 import psutil
-import requests  # To fetch live data
+import requests
 
 # 1. Page Configuration
-st.set_page_config(page_title="Forge OS", page_icon="📟", layout="wide")
+st.set_page_config(page_title="Aegis OS", page_icon="🛡️", layout="wide")
 
-# 2. Function to fetch real-time Crypto Prices (Feature 3 Expanded)
+# 2. Live Data Fetcher
 def get_live_prices():
     try:
-        # Fetching BTC and ETH from a public API (CoinGecko)
         url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true"
         response = requests.get(url).json()
-        btc_price = response['bitcoin']['usd']
-        btc_change = response['bitcoin']['usd_24h_change']
-        eth_price = response['ethereum']['usd']
-        eth_change = response['ethereum']['usd_24h_change']
-        return btc_price, btc_change, eth_price, eth_change
+        btc = response['bitcoin']['usd']
+        btc_chg = response['bitcoin']['usd_24h_change']
+        eth = response['ethereum']['usd']
+        eth_chg = response['ethereum']['usd_24h_change']
+        return btc, btc_chg, eth, eth_chg
     except:
         return "N/A", 0, "N/A", 0
 
-# 3. Theme & UI Styling
+# 3. Security Gate (Feature 1)
+if "authenticated" not in st.session_state:
+    st.title("🛡️ Aegis Secure Terminal")
+    pwd = st.text_input("Enter Authorization Key:", type="password")
+    if st.button("Access System"):
+        if pwd == "forge2026":
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Access Denied: Invalid Key")
+    st.stop()
+
+# 4. Theme Engine (Feature 5)
 if 'matrix_mode' not in st.session_state:
     st.session_state.matrix_mode = False
 
@@ -33,47 +44,32 @@ st.markdown(f"""
     .stApp {{background-color: {bg_color};}}
     .status-online {{ color: {theme_color}; font-weight: bold; font-size: 0.8rem; }}
     .stMetric label {{ color: {theme_color} !important; }}
+    .stButton>button {{ border: 1px solid {theme_color}; color: {theme_color}; background-color: transparent; }}
+    .stButton>button:hover {{ background-color: {theme_color}; color: black; }}
     </style>
     """, unsafe_allow_html=True)
 
-# 4. Authentication Logic
-if "authenticated" not in st.session_state:
-    st.title("🔒 Forge Secure Access")
-    pwd = st.text_input("Enter Command Center Passcode:", type="password")
-    if st.button("Unlock Terminal"):
-        if pwd == "forge2026":
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("Invalid Credentials")
-    st.stop()
-
-# --- CONTENT BELOW ONLY LOADS AFTER AUTHENTICATION ---
-
-# 5. Global Analytics Sidebar (Live Data)
+# 5. Sidebar - Live Intel & Controls (Feature 3)
 with st.sidebar:
     st.title("📡 Live Intel")
     btc, btc_chg, eth, eth_chg = get_live_prices()
-    
     st.metric("BTC/USD", f"${btc:,}" if isinstance(btc, int) else btc, f"{btc_chg:.2f}%")
     st.metric("ETH/USD", f"${eth:,}" if isinstance(eth, int) else eth, f"{eth_chg:.2f}%")
-    
     st.write("---")
     if st.toggle("Matrix Mode (Cyberpunk)"):
         st.session_state.matrix_mode = True
     else:
         st.session_state.matrix_mode = False
-    
-    if st.button("Logout"):
+    if st.button("Secure Logout"):
         del st.session_state.authenticated
         st.rerun()
 
-# 6. Resource Monitor & Header
+# 6. Resource Monitor & Header (Feature 6)
 col_main, col_res = st.columns([4, 1])
 
 with col_main:
-    st.title("📟 Forge Command Center")
-    st.write(f"System Time: {time.strftime('%H:%M:%S')} | Network: **Encrypted**")
+    st.title("🛡️ Aegis Command Center")
+    st.write(f"Session Active | Time: {time.strftime('%H:%M:%S')} | Env: **Production**")
 
 with col_res:
     with st.container(border=True):
@@ -86,15 +82,16 @@ with col_res:
 
 st.write("---")
 
-# 7. Application Grid (7 Apps)
+# 7. Aegis & Nexus App Grid (The 7 Modules)
+# Format: [Icon, Display Name, Description, Filename]
 apps = [
-    ["🤖", "ForgeBot", "Automated execution.", "ForgeBot"],
-    ["🧠", "ForgeML", "Predictive models.", "ForgeML"],
-    ["💰", "ProfitForge", "Profit analytics.", "ProfitForge"],
-    ["📈", "ProfitForgev1", "Legacy stable version.", "ProfitForgev1"],
-    ["⚙️", "forge5.2", "System config.", "forge5.2"],
-    ["🧬", "profitforge_mlp", "Neural logic.", "profitforge_mlp"],
-    ["📉", "volatility_scanner", "Market risk.", "volatility_scanner"]
+    ["🤖", "Aegis Auto", "Automated execution and chat bot.", "Aegis_Auto"],
+    ["🧠", "Nexus Neural", "Deep learning and predictive models.", "Nexus_Neural"],
+    ["💰", "Aegis Wealth", "Core profit and portfolio analytics.", "Aegis_Wealth"],
+    ["📈", "Aegis Legacy", "Stable analytical version (Legacy).", "Aegis_Legacy"],
+    ["⚙️", "Nexus Core", "System utility and architecture config.", "Nexus_Core"],
+    ["🧬", "Neural Profit", "Multi-layer financial modeling logic.", "Neural_Profit"],
+    ["📉", "Aegis Risk", "Market volatility and exposure scanner.", "Aegis_Risk"]
 ]
 
 cols = st.columns(3)
@@ -103,17 +100,20 @@ for index, app in enumerate(apps):
     with cols[index % 3]:
         with st.container(border=True):
             st.markdown(f"### {icon} {name}")
-            st.markdown("<span class='status-online'>● OPERATIONAL</span>", unsafe_allow_html=True)
+            st.markdown("<span class='status-online'>● SYSTEM OPERATIONAL</span>", unsafe_allow_html=True)
             st.write(desc)
-            if st.button(f"Launch Module", key=f"btn_{name}", use_container_width=True):
-                st.switch_page(f"pages/{filename}.py")
+            if st.button(f"Launch {name}", key=f"btn_{filename}", use_container_width=True):
+                try:
+                    st.switch_page(f"pages/{filename}.py")
+                except:
+                    st.error(f"Error: pages/{filename}.py not found.")
 
-# 8. Footer Logs
+# 8. Logs
 st.write("---")
-with st.expander("📂 Security Logs"):
+with st.expander("📂 Access Logs"):
     st.code(f"""
-    [API] Connected to CoinGecko Feed... Success
-    [AUTH] User session validated
-    [RES] Monitoring CPU/RAM usage
-    [LOG] {time.strftime('%Y-%m-%d %H:%M:%S')} - System Idle
+    [SYS] {time.strftime('%Y-%m-%d')} Connection established.
+    [NET] Secure Handshake via SSL.
+    [DB] 7/7 Aegis-Nexus modules mapped.
+    [LOG] System monitoring active...
     """, language="bash")
