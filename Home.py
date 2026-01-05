@@ -131,4 +131,4 @@ with st.expander("📂 Access Logs"):
     [LOG] System monitoring active...
     """, language="bash")
 
-st.caption("Developed by TechSolute | Aegis Unified Environment v2.5")
+st.caption("Developed by TechSolute | Aegis Unified version")
