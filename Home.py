@@ -3,6 +3,7 @@ import time
 import psutil
 import requests
 import sqlite3
+import pandas as pd
 from datetime import datetime
 
 # 1. Page Configuration
@@ -27,15 +28,20 @@ def add_log(user_level, event):
 
 def get_logs():
     conn = sqlite3.connect('aegis_system.db')
-    c = conn.cursor()
-    c.execute("SELECT * FROM logs ORDER BY timestamp DESC LIMIT 10")
-    data = c.fetchall()
+    df = pd.read_sql_query("SELECT * FROM logs ORDER BY timestamp DESC", conn)
     conn.close()
-    return data
+    return df
+
+def clear_logs():
+    conn = sqlite3.connect('aegis_system.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM logs")
+    conn.commit()
+    conn.close()
 
 init_db()
 
-# 3. Live Data & Notifications (Feature 3)
+# 3. Live Data Fetcher
 def get_live_prices():
     try:
         url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true"
@@ -46,8 +52,7 @@ def get_live_prices():
     except:
         return "N/A", 0
 
-# 4. Auth Logic & User Levels (Feature 2)
-# User Levels: Admin (All Access), Analyst (Limited), Observer (Read-only)
+# 4. Auth Logic & User Levels
 PASSCODES = {
     "admin123": "Admin",
     "analyst456": "Analyst",
@@ -61,14 +66,14 @@ if "authenticated" not in st.session_state:
         if pwd in PASSCODES:
             st.session_state.authenticated = True
             st.session_state.user_level = PASSCODES[pwd]
-            add_log(st.session_state.user_level, "System Login Successful")
-            st.toast(f"Welcome, {st.session_state.user_level} Level Access Granted", icon="🔐")
+            add_log(st.session_state.user_level, "System Login")
+            st.toast(f"Access Granted: {st.session_state.user_level} Level", icon="🔐")
             st.rerun()
         else:
             st.error("Access Denied: Invalid Key")
     st.stop()
 
-# 5. Theme & Styling
+# 5. Theme Engine
 if 'matrix_mode' not in st.session_state:
     st.session_state.matrix_mode = False
 
@@ -86,20 +91,17 @@ st.markdown(f"""
     </style>
     """, unsafe_allow_html=True)
 
-# 6. Sidebar (Intel & Settings)
+# 6. Global Sidebar
 with st.sidebar:
     st.title("📡 Live Intel")
     btc, btc_chg = get_live_prices()
     st.metric("BTC/USD", f"${btc:,}" if isinstance(btc, int) else btc, f"{btc_chg:.2f}%")
     
-    # Simple Notification Trigger (Feature 3)
-    if btc_chg > 2:
-        st.toast(f"Market Alert: BTC is up {btc_chg:.2f}%!", icon="📈")
-    elif btc_chg < -2:
-        st.toast(f"Market Alert: BTC is down {btc_chg:.2f}%!", icon="📉")
+    if abs(btc_chg) > 2:
+        st.toast(f"Volatility Alert: BTC moved {btc_chg:.2f}%", icon="⚠️")
 
     st.write("---")
-    st.write(f"Logged in as: **{st.session_state.user_level}**")
+    st.write(f"Identity: **{st.session_state.user_level}**")
     
     if st.toggle("Matrix Mode", value=st.session_state.matrix_mode):
         st.session_state.matrix_mode = True
@@ -111,11 +113,11 @@ with st.sidebar:
         del st.session_state.authenticated
         st.rerun()
 
-# 7. Header & Resource Monitor
+# 7. Main Dashboard Header
 col_main, col_res = st.columns([4, 1])
 with col_main:
     st.title("🛡️ Aegis Command Center")
-    st.write(f"Access Level: {st.session_state.user_level} | {time.strftime('%H:%M:%S')}")
+    st.write(f"Environment: Production | {time.strftime('%H:%M:%S')}")
 
 with col_res:
     with st.container(border=True):
@@ -123,37 +125,53 @@ with col_res:
         st.write(f"💻 CPU: {cpu}%")
         st.progress(cpu/100)
 
+# 8. Tabs for Navigation (Admin gets the Control Panel)
+if st.session_state.user_level == "Admin":
+    tab_apps, tab_admin = st.tabs(["🚀 Modules", "🛡️ Admin Control"])
+else:
+    tab_apps = st.container() # Non-admins don't see tabs
+
+# MODULES TAB
+with tab_apps:
+    st.write("---")
+    apps = [
+        ["🤖", "Aegis Auto", "Automated execution bot.", "Aegis_Auto", ["Admin", "Analyst"]],
+        ["🧠", "Nexus Neural", "Deep learning models.", "Nexus_Neural", ["Admin", "Analyst"]],
+        ["💰", "Aegis Wealth", "Wealth analytics.", "Aegis_Wealth", ["Admin", "Analyst", "Observer"]],
+        ["📈", "Aegis Legacy", "Stable version.", "Aegis_Legacy", ["Admin"]],
+        ["⚙️", "Nexus Core", "System config.", "Nexus_Core", ["Admin"]],
+        ["🧬", "Neural Profit", "Financial logic.", "Neural_Profit", ["Admin", "Analyst"]],
+        ["📉", "Aegis Risk", "Exposure scanner.", "Aegis_Risk", ["Admin", "Analyst", "Observer"]]
+    ]
+
+    visible_apps = [a for a in apps if st.session_state.user_level in a[4]]
+    cols = st.columns(3)
+    
+    for index, app in enumerate(visible_apps):
+        icon, name, desc, filename, roles = app
+        with cols[index % 3]:
+            with st.container(border=True):
+                st.markdown(f"### {icon} {name}")
+                st.markdown("<span class='status-online'>● ACTIVE</span>", unsafe_allow_html=True)
+                st.write(desc)
+                if st.button(f"Launch {name}", key=f"btn_{filename}", use_container_width=True):
+                    add_log(st.session_state.user_level, f"Launched {name}")
+                    st.switch_page(f"pages/{filename}.py")
+
+# ADMIN CONTROL TAB (Hidden from others)
+if st.session_state.user_level == "Admin":
+    with tab_admin:
+        st.subheader("📊 System-Wide Usage Logs")
+        log_df = get_logs()
+        st.dataframe(log_df, use_container_width=True)
+        
+        col_c1, col_c2 = st.columns([1, 4])
+        with col_c1:
+            if st.button("🗑️ Clear All Logs", type="secondary"):
+                clear_logs()
+                st.success("Log database wiped.")
+                st.rerun()
+        st.info("The database records all logins, logouts, and module launches.")
+
 st.write("---")
-
-# 8. Filtered App Grid based on User Level (Feature 2)
-# Admin: All | Analyst: Auto, Wealth, Risk, Neural | Observer: Wealth, Risk
-apps = [
-    ["🤖", "Aegis Auto", "Automated bot.", "Aegis_Auto", ["Admin", "Analyst"]],
-    ["🧠", "Nexus Neural", "Deep learning.", "Nexus_Neural", ["Admin", "Analyst"]],
-    ["💰", "Aegis Wealth", "Wealth analytics.", "Aegis_Wealth", ["Admin", "Analyst", "Observer"]],
-    ["📈", "Aegis Legacy", "Stable version.", "Aegis_Legacy", ["Admin"]],
-    ["⚙️", "Nexus Core", "System config.", "Nexus_Core", ["Admin"]],
-    ["🧬", "Neural Profit", "Financial logic.", "Neural_Profit", ["Admin", "Analyst"]],
-    ["📉", "Aegis Risk", "Exposure scanner.", "Aegis_Risk", ["Admin", "Analyst", "Observer"]]
-]
-
-cols = st.columns(3)
-visible_apps = [a for a in apps if st.session_state.user_level in a[4]]
-
-for index, app in enumerate(visible_apps):
-    icon, name, desc, filename, roles = app
-    with cols[index % 3]:
-        with st.container(border=True):
-            st.markdown(f"### {icon} {name}")
-            st.markdown("<span class='status-online'>● ACTIVE</span>", unsafe_allow_html=True)
-            st.write(desc)
-            if st.button(f"Launch {name}", key=f"btn_{filename}", use_container_width=True):
-                add_log(st.session_state.user_level, f"Launched {name}")
-                st.switch_page(f"pages/{filename}.py")
-
-# 9. Persistent Database Logs (Feature 4)
-st.write("---")
-with st.expander("📂 Persistent System Logs"):
-    logs = get_logs()
-    for log in logs:
-        st.text(f"[{log[0]}] {log[1]}: {log[2]}")
+st.caption("Aegis Unified Environment v3.1 | Secure Session Active")
