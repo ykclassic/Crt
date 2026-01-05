@@ -91,22 +91,14 @@ try:
     st.code(files)
 except Exception as e:
     st.error(f"Cannot access pages folder: {e}")
-# --------------------------
-
+# -------------------------
 
 # 7. Aegis & Nexus App Grid (The 7 Modules)
 # Format: [Icon, Display Name, Description, Filename]
-apps = [
-    ["🤖", "Aegis Auto", "Automated execution and chat bot.", "Aegis_Auto"],
-    ["🧠", "Nexus Neural", "Deep learning and predictive models.", "Nexus_Neural"],
-    ["💰", "Aegis Wealth", "Core profit and portfolio analytics.", "Aegis_Wealth"],
-    ["📈", "Aegis Legacy", "Stable analytical version (Legacy).", "Aegis_Legacy"],
-    ["⚙️", "Nexus Core", "System utility and architecture config.", "Nexus_Core"],
-    ["🧬", "Neural Profit", "Multi-layer financial modeling logic.", "Neural_Profit"],
-    ["📉", "Aegis Risk", "Market volatility and exposure scanner.", "Aegis_Risk"]
-]
-
+# --- ROBUST GRID LAYOUT ---
+# --- ROBUST GRID LAYOUT ---
 cols = st.columns(3)
+
 for index, app in enumerate(apps):
     icon, name, desc, filename = app
     with cols[index % 3]:
@@ -114,11 +106,28 @@ for index, app in enumerate(apps):
             st.markdown(f"### {icon} {name}")
             st.markdown("<span class='status-online'>● SYSTEM OPERATIONAL</span>", unsafe_allow_html=True)
             st.write(desc)
+            
+            # THE ROBUST LAUNCHER
             if st.button(f"Launch {name}", key=f"btn_{filename}", use_container_width=True):
-                try:
-                    st.switch_page(f"pages/{filename}.py")
-                except:
-                    st.error(f"Error: pages/{filename}.py not found.")
+                # We try three different ways to hit the path to bypass Streamlit cache issues
+                paths_to_try = [
+                    f"pages/{filename}.py", 
+                    f"{filename}.py", 
+                    filename
+                ]
+                
+                success = False
+                for path in paths_to_try:
+                    try:
+                        st.switch_page(path)
+                        success = True
+                        break
+                    except:
+                        continue
+                
+                if not success:
+                    st.error(f"Critical: {filename} not found in system map.")
+                    st.toast("Try rebooting the app from the Streamlit Cloud dashboard.")
 
 # 8. Logs
 st.write("---")
