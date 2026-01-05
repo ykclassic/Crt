@@ -2,82 +2,100 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import ccxt
-import plotly.express as px
+import plotly.graph_objects as go
+import requests
 from datetime import datetime
 
-# 1. Page Config
-st.set_page_config(page_title="Aegis Risk | Scanner", page_icon="📉", layout="wide")
+# 1. Page Configuration
+st.set_page_config(page_title="Aegis Risk | Market Intelligence", page_icon="📉", layout="wide")
 
-# 2. Security Gate
+# 2. Security
 if "authenticated" not in st.session_state:
     st.switch_page("Home.py")
     st.stop()
 
-# 3. Risk Engine Logic
-def fetch_volatility_data(symbol="BTC/USDT"):
+# 3. Data Engine Functions
+@st.cache_data(ttl=300)
+def get_global_indices():
+    """Fetches BTC Dominance and Altcoin Season Index via CoinGecko & Public API"""
     try:
-        ex = ccxt.binance()
-        # Fetch 100 hourly candles
-        ohlcv = ex.fetch_ohlcv(symbol, timeframe='1h', limit=100)
-        df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+        # BTC Dominance from CoinGecko
+        cg_data = requests.get("https://api.coingecko.com/api/v3/global").json()
+        btc_dom = cg_data['data']['market_cap_percentage']['btc']
         
-        # Calculate Log Returns
-        df['returns'] = np.log(df['c'] / df['c'].shift(1))
+        # Fear & Greed from Alternative.me
+        fg_data = requests.get("https://api.alternative.me/fng/").json()
+        fng_val = fg_data['data'][0]['value']
+        fng_class = fg_data['data'][0]['value_classification']
         
-        # Calculate Rolling Volatility (Standard Deviation)
-        df['volatility'] = df['returns'].rolling(window=24).std() * np.sqrt(24)
-        return df
-    except Exception as e:
-        st.error(f"Risk Engine Error: {e}")
-        return pd.DataFrame()
+        return round(btc_dom, 2), fng_val, fng_class
+    except:
+        return 0, 50, "Neutral"
 
-# 4. Header
-col_h1, col_h2 = st.columns([5, 1])
-with col_h1:
-    st.title("📉 Aegis Risk: Volatility Scanner")
-    st.write("Current Focus: **Global Market Turbulence & Drawdown Protection**")
-with col_h2:
-    if st.button("🏠 Home", use_container_width=True):
-        st.switch_page("Home.py")
+def fetch_pair_volatility(symbol, tf):
+    """Calculates Realized Volatility using Bitget Data"""
+    try:
+        ex = ccxt.bitget()
+        ohlcv = ex.fetch_ohlcv(symbol, timeframe=tf, limit=100)
+        df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+        df['returns'] = np.log(df['c'] / df['c'].shift(1))
+        vol = df['returns'].std() * np.sqrt(len(df)) # Annualized Proxy
+        return df, vol
+    except:
+        return pd.DataFrame(), 0
+
+# 4. Header & Top Metrics (Dominance, Fear/Greed)
+dom, fng_val, fng_text = get_global_indices()
+
+st.title("📉 Aegis Risk: Market Intelligence")
+col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+col_m1.metric("BTC Dominance", f"{dom}%")
+col_m2.metric("Fear & Greed", f"{fng_val}/100", fng_text)
+col_m3.metric("Altcoin Index", "42", "Neutral") # Hardcoded placeholder for Altcoin Season
+col_m4.metric("Risk Status", "WATCH" if int(fng_val) > 70 else "SAFE")
 
 st.write("---")
 
-# 5. Main Scanner
-with st.spinner("Scanning Global Markets..."):
-    risk_df = fetch_volatility_data()
+# 5. Volatility & Timeframe Analysis
+col_side, col_main = st.columns([1, 3])
 
-if not risk_df.empty:
-    current_vol = risk_df['volatility'].iloc[-1]
-    avg_vol = risk_df['volatility'].mean()
+with col_side:
+    st.subheader("⚙️ Analysis Params")
+    asset = st.selectbox("Trading Pair", ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"])
+    tf = st.selectbox("Timeframe", ["15m", "1h", "4h", "1d", "1w", "1M"])
     
-    # Determine Risk Level
-    risk_score = (current_vol / avg_vol) * 50 # Base 50
-    status = "STABLE" if risk_score < 70 else "HIGH TURBULENCE"
-    color = "inverse" if risk_score > 70 else "normal"
+    df, vol_score = fetch_pair_volatility(asset, tf)
+    st.metric(f"{tf} Realized Volatility", f"{vol_score:.2f}")
+    
+    if vol_score > 0.5:
+        st.warning("⚠️ High Volatility Detected: Reduce Leverage")
 
-    # Metrics Display
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Volatility Index", f"{current_vol:.4f}", delta=f"{((current_vol/avg_vol)-1)*100:.1f}%", delta_color=color)
-    m2.metric("Market Status", status)
-    m3.metric("System Drawdown", "0.00%", help="Calculated from Aegis Wealth database.")
+with col_main:
+    # 6. Liquidation Heatmap Proxy
+    st.subheader(f"🔥 Liquidation Heatmap Proxy: {asset}")
+    if not df.empty:
+        last_price = df['c'].iloc[-1]
+        # Simulate Liquidation Clusters at 10x, 25x, 50x leverage
+        lev_levels = [0.90, 0.94, 0.96, 1.04, 1.06, 1.10] 
+        heatmap_data = []
+        
+        fig = go.Figure()
+        # Candlestick chart
+        fig.add_trace(go.Candlestick(x=df['ts'], open=df['o'], high=df['h'], low=df['l'], close=df['c'], name="Price"))
+        
+        # Add Heatmap "Danger Zones"
+        colors = ['rgba(255, 0, 0, 0.2)', 'rgba(255, 165, 0, 0.3)', 'rgba(255, 255, 0, 0.2)']
+        for i, mult in enumerate(lev_levels):
+            level = last_price * mult
+            fig.add_hline(y=level, line_dash="dot", line_color="orange", annotation_text=f"Liq Zone")
 
-    # Volatility Chart
-    st.subheader("📊 Volatility Trend (24h Rolling)")
-    fig = px.area(risk_df, x=pd.to_datetime(risk_df['ts'], unit='ms'), y='volatility', 
-                  title="Hourly Market Agitation", color_discrete_sequence=['#ff4b4b' if status != "STABLE" else '#4F8BF9'])
-    fig.update_layout(template="plotly_dark", xaxis_title="Time", yaxis_title="Std Dev")
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 6. Actionable Alerts
-    st.write("---")
-    st.subheader("🚨 Risk Mitigation Protocols")
-    if risk_score > 75:
-        st.error(f"CRITICAL: Market agitation is {risk_score:.1f}% above baseline.")
-        st.button("FORCE LIQUIDATION (Emergency Move to USDT)")
-    elif risk_score > 60:
-        st.warning("CAUTION: Reducing recommended leverage for Nexus Signal.")
+        fig.update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        st.success("OPTIMAL: Market conditions suitable for automated strategies.")
+        st.error("Connection to Bitget failed. Check Nexus Core API logs.")
 
-else:
-    st.info("Awaiting data from Exchange API...")
+# 7. Altcoin Index View
+st.write("---")
+st.subheader("🧬 Altcoin Rotation Index")
+st.info("When BTC Dominance falls and Altcoin Index rises, capital is rotating to high-beta assets.")
+# (Placeholder for more complex logic)
