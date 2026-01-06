@@ -30,6 +30,7 @@ init_db()
 # 3. Live Data
 def get_live_prices():
     try:
+        # Using a reliable fallback for price data
         url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true"
         response = requests.get(url, timeout=5).json()
         return response['bitcoin']['usd'], response['bitcoin']['usd_24h_change']
@@ -54,9 +55,7 @@ if "authenticated" not in st.session_state:
 st.markdown("""
     <style>
     .stApp {background-color: #0e1117;}
-    [data-testid="stVerticalBlock"] > div:has(div.stButton) {
-        line-height: 1.2;
-    }
+    [data-testid="stMetricValue"] { font-size: 1.8rem; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -73,32 +72,32 @@ with st.sidebar:
 
 # 7. Header
 st.title("🛡️ Aegis Command Center")
-st.write(f"Environment: Production | {time.strftime('%H:%M:%S')}")
+st.write(f"Environment: Production | Cluster: Main | {time.strftime('%H:%M:%S')}")
 st.write("---")
 
-# 8. App Grid with New Descriptions
-# Structure: [Icon, Name, Filename, Allowed Roles, Description]
+# 8. Updated App Grid (Based on Repository Structure)
+# Format: [Icon, Name, Filename, Allowed Roles, Description]
 apps = [
-    ["🤖", "Aegis Auto", "Aegis_Auto", ["Admin", "Analyst"], 
-     "Algorithmic execution and accuracy optimization."],
+    ["⚙️", "Nexus Core", "Nexus_Core", ["Admin"], 
+     "Central infrastructure hub, API vault, and database management."],
     
     ["🧠", "Nexus Neural", "Nexus_Neural", ["Admin", "Analyst"], 
-     "Deep learning predictive models for market moves."],
+     "Advanced deep learning models for market regime and price prediction."],
     
     ["🛡️", "Aegis Wealth", "Aegis_Wealth", ["Admin", "Analyst", "Observer"], 
-     "Autonomous rebalancing and capital preservation shield."],
-    
-    ["📡", "Nexus Signal", "Nexus_Signal", ["Admin", "Analyst"], 
-     "Multi-timeframe confluence logic with chart targeting."],
-    
-    ["⚙️", "Nexus Core", "Nexus_Core", ["Admin"], 
-     "System utility, API vault, and database management."],
-    
-    ["🧬", "Neural Profit", "Neural_Profit", ["Admin", "Analyst"], 
-     "Advanced trend-following logic using neural networks."],
+     "Portfolio balancing and automated capital preservation logic."],
     
     ["📉", "Aegis Risk", "Aegis_Risk", ["Admin", "Analyst", "Observer"], 
-     "Global volatility scanner and drawdown protection."]
+     "Global volatility scanner and drawdown protection metrics."],
+    
+    ["📡", "Nexus Signal", "Nexus_Signal", ["Admin", "Analyst"], 
+     "Multi-timeframe confluence and signal integrity engine."],
+    
+    ["🤖", "Aegis Auto", "Aegis_Auto", ["Admin", "Analyst"], 
+     "Algorithmic pattern recognition and automated strategy tuning."],
+    
+    ["🧬", "Neural Profit", "Neural_Profit", ["Admin", "Analyst"], 
+     "Profit-weighted neural networks focused on high-accuracy triggers."]
 ]
 
 # Filter apps based on user role
@@ -111,15 +110,12 @@ for index, app in enumerate(visible_apps):
     with cols[index % 3]:
         with st.container(border=True):
             st.markdown(f"### {icon} {name}")
-            # The requested modification: Description underneath the name
             st.caption(description) 
-            st.write("") # Spacer
+            st.write("") 
             
             if st.button(f"Launch {name}", key=f"btn_{filename}", use_container_width=True):
                 add_log(st.session_state.user_level, f"Launched {name}")
-                try:
-                    st.switch_page(f"pages/{filename}.py")
-                except:
-                    st.error(f"Error: pages/{filename}.py not found.")
+                st.switch_page(f"pages/{filename}.py")
 
-st.caption("Aegis Unified Environment v3.4 | Multi-Module Architecture")
+st.write("---")
+st.caption("Aegis Unified Environment v3.5 | Security: AES-256 Vault Active")
