@@ -4,6 +4,16 @@ import numpy as np
 import plotly.express as px
 import time
 
+def get_live_signal(asset="BTC/USDT"):
+    # Insert your actual model logic here
+    # Example mock return:
+    return "LONG", 92.5, "12:00:00"
+
+if __name__ == "__main__":
+    # Your existing UI code goes inside this block
+    # This prevents the UI from rendering when Nexus Forge imports the file
+    pass 
+
 # 1. Dashboard Configuration
 st.set_page_config(page_title="Aegis Global | Multi-Asset Pulse", page_icon="🌐", layout="wide")
 
@@ -98,3 +108,4 @@ with h3:
     st.write("📡 **Data Source**: Bitget/XT Multi-feed")
 
 st.caption("Aegis Global v4.2 | Fragment-based Auto-Refresh Active")
+
