@@ -7,6 +7,16 @@ from cryptography.fernet import Fernet
 import os
 import sqlite3
 
+def get_live_signal(asset="BTC/USDT"):
+    # Insert your actual model logic here
+    # Example mock return:
+    return "LONG", 92.5, "12:00:00"
+
+if __name__ == "__main__":
+    # Your existing UI code goes inside this block
+    # This prevents the UI from rendering when Nexus Forge imports the file
+    pass 
+
 # --- 1. SYSTEM SECURITY & DATABASE ---
 def get_or_create_key():
     """Generates or retrieves the master encryption key."""
