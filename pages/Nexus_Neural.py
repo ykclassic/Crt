@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-from datetime import datetime, timedelta
 
 # 1. Dashboard Configuration
 st.set_page_config(page_title="Aegis Global | Multi-Asset Pulse", page_icon="🌐", layout="wide")
@@ -19,14 +18,13 @@ def get_global_signals(assets):
     for asset in assets:
         regime = np.random.choice(["BULLISH", "BEARISH", "SIDEWAYS"], p=[0.4, 0.3, 0.3])
         conf = np.random.uniform(60, 98)
-        # Decay: How many minutes until the signal drops below 70% confidence
         decay_min = np.random.randint(5, 180) 
         
         data.append({
             "Asset": asset,
             "Regime": regime,
             "Confidence": round(conf, 2),
-            "Decay (Min)": decay_min,
+            "Decay_Min": decay_min,  # Removed spaces/parentheses to prevent AttributeError
             "Status": "🔥 HIGH PRIORITY" if conf > 90 and regime != "SIDEWAYS" else "📡 MONITORING"
         })
     return pd.DataFrame(data)
@@ -52,7 +50,9 @@ if st.button("🔄 Refresh Global Intelligence"):
         cols = st.columns(len(top_signals))
         for i, row in enumerate(top_signals.itertuples()):
             with cols[i]:
+                # Accessing Confidence and Regime via namedtuple attributes
                 st.metric(row.Asset, f"{row.Confidence}%", f"{row.Regime}")
+                # FIXED: Accessing Decay_Min correctly
                 st.caption(f"Expires in: {row.Decay_Min}m")
     else:
         st.info("No high-priority signals currently meeting the 90% confidence threshold.")
@@ -63,25 +63,26 @@ if st.button("🔄 Refresh Global Intelligence"):
     
     with c1:
         st.subheader("Signal Reliability Matrix")
-        fig = px.scatter(df_signals, x="Confidence", y="Decay (Min)", size="Confidence", 
+        # Rename columns for the visual chart display only
+        plot_df = df_signals.rename(columns={"Decay_Min": "Decay (Min)"})
+        fig = px.scatter(plot_df, x="Confidence", y="Decay (Min)", size="Confidence", 
                          color="Regime", hover_name="Asset",
                          color_discrete_map={"BULLISH": "#00FFCC", "BEARISH": "#FF4B4B", "SIDEWAYS": "#808080"})
         fig.add_hline(y=30, line_dash="dash", line_color="red", annotation_text="Immediate Expiry Zone")
         fig.update_layout(template="plotly_dark", height=450)
         st.plotly_chart(fig, use_container_width=True)
-        
-        
 
     with c2:
         st.subheader("Full Asset Pulse")
-        # Color formatting for the dataframe
         def color_regime(val):
             color = '#00FFCC' if val == 'BULLISH' else ('#FF4B4B' if val == 'BEARISH' else 'white')
             return f'color: {color}'
         
-        st.dataframe(df_signals.style.applymap(color_regime, subset=['Regime']), use_container_width=True)
+        # Displaying with user-friendly headers
+        display_df = df_signals.rename(columns={"Decay_Min": "Decay (Min)"})
+        st.dataframe(display_df.style.applymap(color_regime, subset=['Regime']), use_container_width=True)
 
-# 3. System Health (Previous Updates Maintained)
+# 3. System Health (Maintained)
 st.write("---")
 h1, h2, h3 = st.columns(3)
 with h1:
@@ -91,4 +92,4 @@ with h2:
 with h3:
     st.write("📡 **Data Source**: Bitget/XT Multi-feed")
 
-st.caption("Aegis Global v4.0 | Multi-Asset Signal Command")
+st.caption("Aegis Global v4.1 | Multi-Asset Signal Command (Fixed)")
