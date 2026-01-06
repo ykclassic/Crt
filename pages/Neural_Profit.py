@@ -6,6 +6,16 @@ import time
 import plotly.graph_objects as go
 from datetime import datetime
 
+def get_live_signal(asset="BTC/USDT"):
+    # Insert your actual model logic here
+    # Example mock return:
+    return "LONG", 92.5, "12:00:00"
+
+if name == "main":
+    # Your existing UI code goes inside this block
+    # This prevents the UI from rendering when Nexus Forge imports the file
+    pass
+    
 # 1. Page Configuration
 st.set_page_config(page_title="Neural Profit | Aegis OS", page_icon="🧬", layout="wide")
 
@@ -142,3 +152,4 @@ with st.expander("🔬 Neural Diagnostics"):
         """, language="bash")
     else:
         st.write("System idling. Awaiting data feed.")
+
