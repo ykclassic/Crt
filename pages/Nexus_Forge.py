@@ -1,109 +1,83 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 import plotly.graph_objects as go
+import importlib.util
+import os
 import time
 
 # 1. Page Configuration
-st.set_page_config(page_title="Aegis Master Node | Nexus Forge", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="Nexus Forge | Aggregator", page_icon="⚙️", layout="wide")
 
-# 2. Security Gate
-if "authenticated" not in st.session_state:
-    st.switch_page("Home.py")
-    st.stop()
+# 2. Dynamic Module Importer
+def import_page_module(page_name):
+    """Dynamically imports functions from other Streamlit pages."""
+    path = f"pages/{page_name}.py"
+    if not os.path.exists(path):
+        return None
+    spec = importlib.util.spec_from_file_location(page_name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-# --- DATABASE INTEGRITY CHECK ---
-def safe_init_db():
-    """Ensures the table exists before any query is made to prevent ReadSQL errors."""
-    conn = sqlite3.connect('aegis_system.db', check_same_thread=False)
-    c = conn.cursor()
-    # Ensure the table and columns exist
-    c.execute('''CREATE TABLE IF NOT EXISTS logs 
-                 (timestamp TEXT, user_level TEXT, event TEXT)''')
-    conn.commit()
-    conn.close()
-
-# --- SHARED DATA ENGINE ---
-def get_latest_signals():
-    """Fetches signals with a fallback to prevent app crashes."""
-    safe_init_db() # Ensure DB is ready
-    try:
-        conn = sqlite3.connect('aegis_system.db', check_same_thread=False)
-        # Use a simpler query to check for data first
-        query = """
-        SELECT timestamp, user_level as Module, event as Signal 
-        FROM logs 
-        WHERE event LIKE 'Signal:%' 
-        ORDER BY timestamp DESC LIMIT 20
-        """
-        df = pd.read_sql(query, conn)
-        conn.close()
-        return df
-    except Exception as e:
-        # If the DB is empty or columns are missing, return an empty DF with correct headers
-        return pd.DataFrame(columns=["timestamp", "Module", "Signal"])
-
-# --- WEIGHTED ENSEMBLE LOGIC ---
-def calculate_master_confidence(df):
-    """Calculates weighted consensus from sub-modules."""
-    if df.empty:
-        return 50.0, "INITIALIZING" # Neutral starting point
+# --- AGGREGATION ENGINE ---
+def run_global_aggregation():
+    """Triggers logic across all key modules and collects results."""
+    results = []
     
-    # Logic: More signals = higher conviction. 
-    # In a real setup, we'd parse the 'Signal' string for 'LONG'/'SHORT'
-    base_confidence = 75.0 + (len(df) * 1.5) 
-    base_confidence = min(base_confidence, 98.5) # Cap at 98.5
+    # Modules to poll
+    modules_to_poll = {
+        "Nexus_Neural": "run_neural_inference",
+        "Nexus_Signal": "get_confluence_signal", # Assumes this function exists in Nexus_Signal
+    }
     
-    verdict = "STRONG CONFLUENCE" if base_confidence > 85 else "AWAITING SYNC"
-    return base_confidence, verdict
+    for page, func_name in modules_to_poll.items():
+        mod = import_page_module(page)
+        if mod and hasattr(mod, func_name):
+            # Run the specific inference function from that page
+            # We pass a default asset like 'BTC/USDT'
+            direction, conf = getattr(mod, func_name)("BTC/USDT")
+            results.append({"Module": page, "Direction": direction, "Confidence": conf})
+        else:
+            results.append({"Module": page, "Direction": "N/A", "Confidence": 0})
+            
+    return pd.DataFrame(results)
 
 # --- UI LAYOUT ---
-st.title("🧠 Aegis Master Node: Nexus Forge")
-st.write("Meta-Inference Engine | Global Signal Aggregator")
+st.title("⚙️ Nexus Forge: Master Aggregator")
+st.write("Aggregating live inference from all Aegis sub-modules.")
 
-# Automatic Refresh Logic
-@st.fragment(run_every="30s")
-def render_master_dashboard():
-    df_signals = get_latest_signals()
-    confidence, verdict = calculate_master_confidence(df_signals)
-    
-    col_gauge, col_logic = st.columns([1, 1])
-    
-    with col_gauge:
-        st.subheader("Global Confidence Level")
-        fig = go.Figure(go.Indicator(
-            mode = "gauge+number",
-            value = confidence,
-            domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': f"Verdict: {verdict}", 'font': {'size': 18}},
-            gauge = {
-                'axis': {'range': [0, 100], 'tickwidth': 1},
-                'bar': {'color': "#00FFCC"},
-                'steps': [
-                    {'range': [0, 70], 'color': '#222'},
-                    {'range': [70, 85], 'color': '#444'}],
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': 90}}))
-        fig.update_layout(template="plotly_dark", height=350, margin=dict(l=20, r=20, t=50, b=20))
+if st.button("🛰️ Poll All Modules & Synthesize"):
+    with st.spinner("Synchronizing with Neural and Signal nodes..."):
+        df_master = run_global_aggregation()
+        
+        # Calculate Informed Decision (Weighted Average)
+        avg_conf = df_master["Confidence"].mean()
+        
+        # Layout
+        c1, c2 = st.columns([1, 2])
+        
+        with c1:
+            st.subheader("Aggregated Verdict")
+            st.metric("Global Confidence", f"{avg_conf:.1f}%")
+            if avg_conf > 85:
+                st.success("🔥 HIGH CONVICTION: Multi-model alignment detected.")
+            else:
+                st.warning("⚖️ DIVERGENCE: Models are not in sync.")
+        
+        with c2:
+            st.subheader("Module Breakdown")
+            st.table(df_master)
+
+        # Signal Consensus Visualization
+        
+        fig = go.Figure(data=go.Scatterpolar(
+          r=df_master['Confidence'],
+          theta=df_master['Module'],
+          fill='toself',
+          marker=dict(color='#00FFCC')
+        ))
+        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), 
+                          template="plotly_dark", showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
-    with col_logic:
-        st.subheader("📡 Real-Time Intelligence Feed")
-        if not df_signals.empty:
-            st.dataframe(df_signals, use_container_width=True, height=300)
-        else:
-            st.warning("Nexus Forge is online. Waiting for signals from sub-modules (Neural, Signal, Profit)...")
-
-    st.write("---")
-    if confidence > 85:
-        st.success(f"🔥 **CONFLUENCE ALERT:** Decision Node confirms high-probability entry for global assets.")
-    else:
-        st.info(f"⚖️ **MARKET SCAN:** {verdict}. Current intelligence suggests waiting for model alignment.")
-
-# Execute the core logic
-render_master_dashboard()
-
-st.write("---")
-st.caption(f"Aegis Forge v1.1 | Database Sync: Active | {time.strftime('%H:%M:%S')}")
+st.caption("Nexus Forge v2.0 | Pull-based Architecture | Live Sync")
