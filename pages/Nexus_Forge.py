@@ -1,83 +1,99 @@
 import streamlit as st
 import pandas as pd
+import sqlite3
 import plotly.graph_objects as go
 import importlib.util
 import os
 import time
 
-# 1. Page Configuration
-st.set_page_config(page_title="Nexus Forge | Aggregator", page_icon="⚙️", layout="wide")
+# 1. Page Config
+st.set_page_config(page_title="Nexus Forge | Master Node", page_icon="⚙️", layout="wide")
 
-# 2. Dynamic Module Importer
-def import_page_module(page_name):
-    """Dynamically imports functions from other Streamlit pages."""
+if "authenticated" not in st.session_state:
+    st.switch_page("Home.py")
+    st.stop()
+
+# --- ROBUST MODULE PULLER ---
+def get_module_recommendation(page_name, asset):
+    """Safely pulls the get_live_signal function from sub-modules."""
     path = f"pages/{page_name}.py"
     if not os.path.exists(path):
-        return None
-    spec = importlib.util.spec_from_file_location(page_name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-# --- AGGREGATION ENGINE ---
-def run_global_aggregation():
-    """Triggers logic across all key modules and collects results."""
-    results = []
+        return "OFFLINE", 0.0, "Path Error"
     
-    # Modules to poll
-    modules_to_poll = {
-        "Nexus_Neural": "run_neural_inference",
-        "Nexus_Signal": "get_confluence_signal", # Assumes this function exists in Nexus_Signal
-    }
-    
-    for page, func_name in modules_to_poll.items():
-        mod = import_page_module(page)
-        if mod and hasattr(mod, func_name):
-            # Run the specific inference function from that page
-            # We pass a default asset like 'BTC/USDT'
-            direction, conf = getattr(mod, func_name)("BTC/USDT")
-            results.append({"Module": page, "Direction": direction, "Confidence": conf})
+    try:
+        spec = importlib.util.spec_from_file_location(page_name, path)
+        mod = importlib.util.module_from_spec(spec)
+        # We wrap the execution to prevent sub-module UI from breaking the import
+        spec.loader.exec_module(mod)
+        
+        if hasattr(mod, "get_live_signal"):
+            direction, conf, _ = mod.get_live_signal(asset)
+            return direction, conf, "Success"
         else:
-            results.append({"Module": page, "Direction": "N/A", "Confidence": 0})
-            
-    return pd.DataFrame(results)
+            return "MISSING_FUNC", 0.0, "Function not found"
+    except Exception as e:
+        return "ERROR", 0.0, str(e)
+
+# --- MASTER DECISION ENGINE ---
+def generate_recommendation(df):
+    """Analyzes aggregated data to give an informed final decision."""
+    if df.empty or df['Confidence'].sum() == 0:
+        return "HOLD", "Incomplete data from sub-modules. Standing by."
+    
+    avg_conf = df['Confidence'].mean()
+    longs = len(df[df['Verdict'] == 'LONG'])
+    shorts = len(df[df['Verdict'] == 'SHORT'])
+    
+    if avg_conf > 85 and longs > shorts:
+        return "STRONG BUY", f"High confluence across {longs} models with {avg_conf:.1f}% confidence."
+    elif avg_conf > 85 and shorts > longs:
+        return "STRONG SELL", f"Heavy bearish alignment detected ({avg_conf:.1f}% confidence)."
+    else:
+        return "NEUTRAL", "Signals are divergent. Market regime is currently high-noise."
 
 # --- UI LAYOUT ---
-st.title("⚙️ Nexus Forge: Master Aggregator")
-st.write("Aggregating live inference from all Aegis sub-modules.")
+st.title("⚙️ Nexus Forge: Executive Decision Node")
+target_asset = st.selectbox("🎯 Asset for Synthesis", ["BTC/USDT", "ETH/USDT", "SOL/USDT", "SUI/USDT"])
 
-if st.button("🛰️ Poll All Modules & Synthesize"):
-    with st.spinner("Synchronizing with Neural and Signal nodes..."):
-        df_master = run_global_aggregation()
+if st.button("🛰️ Execute Global Synthesis"):
+    with st.status("Gathering Intelligence...", expanded=True) as status:
+        st.write("Polling Nexus Neural...")
+        n_dir, n_conf, n_msg = get_module_recommendation("Nexus_Neural", target_asset)
         
-        # Calculate Informed Decision (Weighted Average)
-        avg_conf = df_master["Confidence"].mean()
+        st.write("Polling Nexus Signal...")
+        s_dir, s_conf, s_msg = get_module_recommendation("Nexus_Signal", target_asset)
         
-        # Layout
-        c1, c2 = st.columns([1, 2])
-        
-        with c1:
-            st.subheader("Aggregated Verdict")
-            st.metric("Global Confidence", f"{avg_conf:.1f}%")
-            if avg_conf > 85:
-                st.success("🔥 HIGH CONVICTION: Multi-model alignment detected.")
-            else:
-                st.warning("⚖️ DIVERGENCE: Models are not in sync.")
-        
-        with c2:
-            st.subheader("Module Breakdown")
-            st.table(df_master)
+        # Combine into DataFrame
+        results_df = pd.DataFrame([
+            {"Module": "Nexus Neural", "Verdict": n_dir, "Confidence": n_conf, "Status": n_msg},
+            {"Module": "Nexus Signal", "Verdict": s_dir, "Confidence": s_conf, "Status": s_msg}
+        ])
+        status.update(label="Synthesis Complete!", state="complete", expanded=False)
 
-        # Signal Consensus Visualization
-        
-        fig = go.Figure(data=go.Scatterpolar(
-          r=df_master['Confidence'],
-          theta=df_master['Module'],
-          fill='toself',
-          marker=dict(color='#00FFCC')
-        ))
-        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), 
-                          template="plotly_dark", showlegend=False)
+    # 1. DISPLAY MASTER RECOMMENDATION
+    st.write("---")
+    final_action, explanation = generate_recommendation(results_df)
+    
+    # Large Recommendation Banner
+    bg_color = "#00FFCC" if "BUY" in final_action else ("#FF4B4B" if "SELL" in final_action else "#333")
+    st.markdown(f"""
+        <div style="background-color:{bg_color}; padding:20px; border-radius:10px; text-align:center;">
+            <h1 style="color:black; margin:0;">EXECUTION: {final_action}</h1>
+            <p style="color:black; font-weight:bold;">{explanation}</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # 2. VISUALS
+    st.write("")
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        st.subheader("Model Agreement")
+        fig = go.Figure(go.Pie(labels=results_df['Module'], values=results_df['Confidence'], hole=.4, marker_colors=['#00FFCC', '#222']))
+        fig.update_layout(template="plotly_dark", height=300, showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
+    
+    with c2:
+        st.subheader("Sub-Module Metrics")
+        st.dataframe(results_df, use_container_width=True)
 
-st.caption("Nexus Forge v2.0 | Pull-based Architecture | Live Sync")
+st.caption(f"Nexus Forge v4.2 | Logic: Combined Hybrid | {time.strftime('%H:%M:%S')}")
