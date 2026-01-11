@@ -1,6 +1,6 @@
 # ============================================================
-# AEGIS INTELLIGENCE PRO v2
-# Multi-Asset | Multi-Timeframe | Performance Analytics
+# AEGIS INTELLIGENCE — SIGNAL LAB
+# Signal Generation • No Execution • Institutional Analytics
 # ============================================================
 
 import streamlit as st
@@ -16,17 +16,17 @@ import sqlite3
 import requests
 
 # ============================================================
-# PAGE CONFIG
+# PAGE CONFIG & AUTH
 # ============================================================
 
-st.set_page_config(page_title="Aegis Intelligence Pro v2", layout="wide")
+st.set_page_config(page_title="Aegis Intelligence | Signal Lab", layout="wide")
 
 if "authenticated" not in st.session_state:
     st.switch_page("Home.py")
     st.stop()
 
 # ============================================================
-# TELEGRAM CONFIG
+# TELEGRAM (SIGNAL ALERTS ONLY)
 # ============================================================
 
 TELEGRAM = {
@@ -35,20 +35,20 @@ TELEGRAM = {
     "chat_id": "PUT_CHAT_ID"
 }
 
-def send_telegram(msg):
+def send_telegram(message: str):
     if not TELEGRAM["enabled"]:
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM['bot_token']}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM["chat_id"], "text": msg}, timeout=5)
+        requests.post(url, json={"chat_id": TELEGRAM["chat_id"], "text": message}, timeout=5)
     except:
         pass
 
 # ============================================================
-# DATABASE
+# SIGNAL DATABASE (NO EXECUTION DATA)
 # ============================================================
 
-conn = sqlite3.connect("aegis_signals.db", check_same_thread=False)
+conn = sqlite3.connect("aegis_signal_journal.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -56,12 +56,12 @@ CREATE TABLE IF NOT EXISTS signals (
     timestamp TEXT,
     asset TEXT,
     timeframe TEXT,
-    direction TEXT,
-    entry REAL,
-    stop REAL,
-    target REAL,
+    bias TEXT,
+    reference_price REAL,
+    projected_objective REAL,
+    invalidation_level REAL,
     confidence REAL,
-    outcome REAL
+    regime TEXT
 )
 """)
 conn.commit()
@@ -85,7 +85,7 @@ def atr(df, period=14):
     )
     return tr.rolling(period).mean()
 
-def features(df):
+def engineer_features(df):
     df = df.copy()
     df["ema_9"] = df["c"].ewm(span=9).mean()
     df["ema_21"] = df["c"].ewm(span=21).mean()
@@ -96,29 +96,29 @@ def features(df):
     return df.dropna()
 
 # ============================================================
-# REGIME
+# MARKET REGIME
 # ============================================================
 
-def regime(df):
+def detect_regime(df):
     trend = abs(df["ema_9"].iloc[-1] - df["ema_50"].iloc[-1]) / df["c"].iloc[-1]
     vol = df["atr"].iloc[-1] / df["c"].iloc[-1]
     if trend > 0.01:
-        return "TREND"
+        return "TRENDING"
     if vol < 0.003:
-        return "LOW_VOL"
-    return "RANGE"
+        return "LOW_VOLATILITY"
+    return "RANGING"
 
 # ============================================================
-# ENSEMBLE
+# WALK-FORWARD ENSEMBLE (SIGNAL-ONLY)
 # ============================================================
 
-def ensemble_predict(df):
-    feats = ["c","v","ema_9","ema_21","ema_50","vol_chg","atr"]
+def ensemble_signal(df):
+    features = ["c","v","ema_9","ema_21","ema_50","vol_chg","atr"]
     split = int(len(df) * 0.8)
-    train, test = df.iloc[:split], df.iloc[split:]
 
-    X_train, y_train = train[feats], train["target"]
-    X_test, y_test = test[feats], test["target"]
+    train, test = df.iloc[:split], df.iloc[split:]
+    X_train, y_train = train[features], train["target"]
+    X_test, y_test = test[features], test["target"]
 
     models = [
         RandomForestRegressor(n_estimators=150, random_state=42),
@@ -137,95 +137,136 @@ def ensemble_predict(df):
     weights = np.array([1/e for e in errors])
     weights /= weights.sum()
 
-    final_pred = np.dot(preds, weights)
+    final_prediction = np.dot(preds, weights)
 
-    hit_rate = np.mean(
+    directional_accuracy = np.mean(
         np.sign(test["target"] - test["c"]) ==
-        np.sign(final_pred - test["c"].iloc[-1])
+        np.sign(final_prediction - test["c"].iloc[-1])
     )
 
-    return final_pred, min(99.0, hit_rate * 100)
+    confidence = min(99.0, directional_accuracy * 100)
+
+    return final_prediction, confidence
 
 # ============================================================
-# TRADE ENGINE
+# SIGNAL CONSTRUCTION (NO EXECUTION)
 # ============================================================
 
-def trade_from_prediction(df, pred, conf, asset, tf):
-    if conf < 60:
+def build_signal(df, prediction, confidence, asset, timeframe):
+    if confidence < 60:
         return None
 
     price = df["c"].iloc[-1]
     atr_val = df["atr"].iloc[-1]
-    direction = "LONG" if pred > price else "SHORT"
+    bias = "LONG" if prediction > price else "SHORT"
 
-    stop = price - atr_val * 1.5 if direction == "LONG" else price + atr_val * 1.5
-    target = price + atr_val * 3 if direction == "LONG" else price - atr_val * 3
+    projected_objective = price + atr_val * 2 if bias == "LONG" else price - atr_val * 2
+    invalidation = price - atr_val * 1.5 if bias == "LONG" else price + atr_val * 1.5
+
+    reg = detect_regime(df)
 
     cursor.execute(
-        "INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,NULL)",
-        (datetime.utcnow().isoformat(), asset, tf, direction, price, stop, target, conf)
+        "INSERT INTO signals VALUES (?,?,?,?,?,?,?,?)",
+        (
+            datetime.utcnow().isoformat(),
+            asset,
+            timeframe,
+            bias,
+            price,
+            projected_objective,
+            invalidation,
+            confidence,
+            reg
+        )
     )
     conn.commit()
 
-    return direction, price, stop, target
+    return {
+        "asset": asset,
+        "timeframe": timeframe,
+        "bias": bias,
+        "price": price,
+        "objective": projected_objective,
+        "invalidation": invalidation,
+        "confidence": confidence,
+        "regime": reg
+    }
 
 # ============================================================
-# MULTI-ASSET SCANNER
+# UI — MULTI-ASSET / MULTI-TF SCANNER
 # ============================================================
 
 ASSETS = ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","DOGE/USDT"]
-TIMEFRAMES = ["1h","4h"]
 
-st.title("🧠 Aegis Intelligence Pro — Multi-Asset Scanner")
+st.title("🧠 Aegis Intelligence — Signal Lab")
+st.caption("Signal Generation Only • No Execution • Institutional Analytics")
 
-if st.button("🚀 Run Full Market Scan"):
-    results = []
+if st.button("🚀 Run Full Market Signal Scan"):
+    signals = []
 
     for asset in ASSETS:
-        df_1h = features(fetch_ohlcv(asset,"1h"))
-        df_4h = features(fetch_ohlcv(asset,"4h"))
+        df_1h = engineer_features(fetch_ohlcv(asset,"1h"))
+        df_4h = engineer_features(fetch_ohlcv(asset,"4h"))
 
-        pred1, conf1 = ensemble_predict(df_1h)
-        pred4, conf4 = ensemble_predict(df_4h)
+        pred_1h, conf_1h = ensemble_signal(df_1h)
+        pred_4h, conf_4h = ensemble_signal(df_4h)
 
-        dir1 = "LONG" if pred1 > df_1h["c"].iloc[-1] else "SHORT"
-        dir4 = "LONG" if pred4 > df_4h["c"].iloc[-1] else "SHORT"
+        dir_1h = "LONG" if pred_1h > df_1h["c"].iloc[-1] else "SHORT"
+        dir_4h = "LONG" if pred_4h > df_4h["c"].iloc[-1] else "SHORT"
 
-        if dir1 == dir4 and conf1 > 60 and conf4 > 60:
-            trade = trade_from_prediction(df_1h, pred1, (conf1+conf4)/2, asset, "1h")
-            if trade:
-                results.append((asset, dir1, conf1, conf4))
+        if dir_1h == dir_4h and conf_1h > 60 and conf_4h > 60:
+            signal = build_signal(
+                df_1h,
+                pred_1h,
+                (conf_1h + conf_4h) / 2,
+                asset,
+                "1H (4H Confirmed)"
+            )
+            if signal:
+                signals.append(signal)
 
-    st.subheader("📊 Qualified Signals")
-    st.dataframe(pd.DataFrame(results, columns=["Asset","Direction","Conf 1H","Conf 4H"]))
+                send_telegram(
+                    f"""AEGIS SIGNAL (ANALYTICAL)
+Asset: {signal['asset']}
+Timeframe: {signal['timeframe']}
+Bias: {signal['bias']}
+Reference Price: {signal['price']:.2f}
+Projected Objective: {signal['objective']:.2f}
+Invalidation Level: {signal['invalidation']:.2f}
+Confidence: {signal['confidence']:.2f}%
+Regime: {signal['regime']}
+"""
+                )
+
+    if signals:
+        st.subheader("📊 Qualified Signals")
+        st.dataframe(pd.DataFrame(signals))
+    else:
+        st.warning("No qualified signals under current market conditions.")
 
 # ============================================================
-# PERFORMANCE DASHBOARD
+# PERFORMANCE DASHBOARD (SIGNAL QUALITY)
 # ============================================================
 
 st.write("---")
-st.subheader("📈 Performance Dashboard")
+st.subheader("📈 Signal Quality Dashboard")
 
-df_perf = pd.read_sql("SELECT * FROM signals WHERE outcome IS NOT NULL", conn)
+df_log = pd.read_sql("SELECT * FROM signals", conn)
 
-if not df_perf.empty:
-    df_perf["equity"] = df_perf["outcome"].cumsum()
-    drawdown = df_perf["equity"] - df_perf["equity"].cummax()
-
-    st.metric("Total Trades", len(df_perf))
-    st.metric("Win Rate", f"{(df_perf['outcome']>0).mean()*100:.2f}%")
-    st.metric("Max Drawdown", f"{drawdown.min():.2f} R")
+if not df_log.empty:
+    st.metric("Total Signals Generated", len(df_log))
+    st.metric("Average Confidence", f"{df_log['confidence'].mean():.2f}%")
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(y=df_perf["equity"], name="Equity Curve"))
-    fig.update_layout(template="plotly_dark", height=350)
+    fig.add_trace(go.Histogram(x=df_log["confidence"], nbinsx=20))
+    fig.update_layout(template="plotly_dark", height=300, title="Confidence Distribution")
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.info("No closed trades yet.")
+    st.info("No signals recorded yet.")
 
 # ============================================================
 # FOOTER
 # ============================================================
 
 st.write("---")
-st.caption("Walk-Forward Ensemble • Multi-TF Confluence • Risk-Adjusted Execution")
+st.caption("Walk-Forward Ensemble • Multi-Timeframe Confluence • Signal-Only System")
