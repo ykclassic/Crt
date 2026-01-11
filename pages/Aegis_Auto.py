@@ -2,6 +2,14 @@
 # MULTI-ASSET SIGNAL SCAN WITH REASON LOGGING
 # ==========================
 
+# Define 20 assets for scanning
+ASSETS = [
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT",
+    "ADA/USDT", "LINK/USDT", "TRX/USDT", "SUI/USDT", "PEPE/USDT",
+    "BNB/USDT", "MATIC/USDT", "LTC/USDT", "AVAX/USDT", "UNI/USDT",
+    "ATOM/USDT", "NEAR/USDT", "FTM/USDT", "ALGO/USDT", "VET/USDT"
+]
+
 signals = []
 
 for asset in ASSETS:
