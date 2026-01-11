@@ -135,13 +135,29 @@ for asset in ASSETS:
     summary.append({"asset": asset, "status": status, "reason": reason if reason else "-"})
 
 summary_df = pd.DataFrame(summary)
-st.subheader("📊 Multi-Asset Signal Summary")
-st.dataframe(summary_df)
+
+# -----------------------------
+# 9️⃣ Color-coded summary
+# -----------------------------
+def color_summary(row):
+    if row['status'] == "Signal Generated":
+        return ['background-color: #00FFCC']*3  # green
+    elif "Direction mismatch" in row['reason']:
+        return ['background-color: #FF6B6B']*3  # red shade
+    elif "confidence too low" in row['reason']:
+        return ['background-color: #FFA500']*3  # orange
+    elif "Missing OHLCV" in row['reason']:
+        return ['background-color: #FF4B4B']*3  # dark red
+    else:
+        return ['background-color: white']*3
+
+st.subheader("📊 Multi-Asset Signal Summary (Color-Coded)")
+st.dataframe(summary_df.style.apply(color_summary, axis=1))
 st.markdown("**❗ Filters Blocking Signals:**")
 st.write(summary_df['reason'].value_counts())
 
 # -----------------------------
-# 9️⃣ Generate Signals & Charts
+# 10️⃣ Generate Signals & Charts
 # -----------------------------
 signals = []
 
@@ -173,9 +189,7 @@ for asset in ASSETS:
     signal = build_signal(df_1h, pred_1h, (conf_1h+conf_4h)/2, asset, "1H (4H Confirmed)")
     signals.append(signal)
 
-    # -----------------------------
-    # Plot Chart for the Signal
-    # -----------------------------
+    # Plot Chart
     current_price = df_1h["c"].iloc[-1]
     future_dt = [df_1h["dt"].iloc[-1] + timedelta(hours=i) for i in range(5)]
     future_prices = [current_price + ((pred_1h - current_price)/4)*i for i in range(5)]
