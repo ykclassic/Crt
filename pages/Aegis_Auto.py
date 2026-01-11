@@ -35,9 +35,15 @@ def features(df):
 # -----------------------------
 # 3️⃣ Fetch OHLCV
 # -----------------------------
-def fetch_ohlcv(symbol, timeframe='1h', limit=200):
+def fetch_ohlcv(symbol, exchange_name, timeframe='1h', limit=200):
     try:
-        ex = ccxt.bitget()
+        if exchange_name.lower() == "xt":
+            ex = ccxt.xt({'enableRateLimit': True})
+        elif exchange_name.lower() == "bitget":
+            ex = ccxt.bitget({'enableRateLimit': True})
+        else:
+            st.error(f"Exchange {exchange_name} not supported")
+            return pd.DataFrame()
         ohlcv = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['ts','o','h','l','c','v'])
         df['dt'] = pd.to_datetime(df['ts'], unit='ms')
@@ -49,8 +55,8 @@ def fetch_ohlcv(symbol, timeframe='1h', limit=200):
 # -----------------------------
 # 4️⃣ Safe Fetch Wrapper
 # -----------------------------
-def safe_fetch(symbol, timeframe='1h', limit=200):
-    df = fetch_ohlcv(symbol, timeframe, limit)
+def safe_fetch(symbol, exchange_name, timeframe='1h', limit=200):
+    df = fetch_ohlcv(symbol, exchange_name, timeframe, limit)
     expected_cols = {"ts","o","h","l","c","v","dt"}
     if df.empty or not expected_cols.issubset(df.columns):
         st.info(f"{symbol} {timeframe}: OHLCV missing or incomplete")
@@ -73,7 +79,6 @@ def ensemble_signal(df):
     model.fit(X, y)
     last_features = X.iloc[-1].values.reshape(1, -1)
     pred_price = model.predict(last_features)[0]
-    # Confidence based on EMA spread
     ema_diff = abs(df['ema9'].iloc[-1] - df['ema21'].iloc[-1]) / df['ema21'].iloc[-1]
     confidence = min(98.5, 75 + (ema_diff * 500))
     return pred_price, confidence
@@ -106,13 +111,22 @@ ASSETS = [
 ]
 
 # -----------------------------
-# 8️⃣ SUMMARY DASHBOARD
+# 8️⃣ Streamlit Page & Exchange Selector
+# -----------------------------
+st.set_page_config(page_title="Multi-Exchange AI Signal Scanner", layout="wide")
+st.title("🧠 Multi-Exchange AI Signal Dashboard")
+
+exchange_choice = st.selectbox("Select Exchange", ["XT", "Bitget"])
+st.markdown("---")
+
+# -----------------------------
+# 9️⃣ Summary Dashboard
 # -----------------------------
 summary = []
 
 for asset in ASSETS:
-    df_1h = features(safe_fetch(asset, "1h"))
-    df_4h = features(safe_fetch(asset, "4h"))
+    df_1h = features(safe_fetch(asset, exchange_choice, "1h"))
+    df_4h = features(safe_fetch(asset, exchange_choice, "4h"))
 
     if df_1h.empty or df_4h.empty:
         summary.append({"asset": asset, "status": "No Signal", "reason": "Missing OHLCV"})
@@ -136,18 +150,16 @@ for asset in ASSETS:
 
 summary_df = pd.DataFrame(summary)
 
-# -----------------------------
-# 9️⃣ Color-coded summary
-# -----------------------------
+# Color-coded summary
 def color_summary(row):
     if row['status'] == "Signal Generated":
-        return ['background-color: #00FFCC']*3  # green
+        return ['background-color: #00FFCC']*3
     elif "Direction mismatch" in row['reason']:
-        return ['background-color: #FF6B6B']*3  # red shade
+        return ['background-color: #FF6B6B']*3
     elif "confidence too low" in row['reason']:
-        return ['background-color: #FFA500']*3  # orange
+        return ['background-color: #FFA500']*3
     elif "Missing OHLCV" in row['reason']:
-        return ['background-color: #FF4B4B']*3  # dark red
+        return ['background-color: #FF4B4B']*3
     else:
         return ['background-color: white']*3
 
@@ -162,8 +174,8 @@ st.write(summary_df['reason'].value_counts())
 signals = []
 
 for asset in ASSETS:
-    df_1h = features(safe_fetch(asset, "1h"))
-    df_4h = features(safe_fetch(asset, "4h"))
+    df_1h = features(safe_fetch(asset, exchange_choice, "1h"))
+    df_4h = features(safe_fetch(asset, exchange_choice, "4h"))
 
     if df_1h.empty or df_4h.empty:
         continue
@@ -185,11 +197,9 @@ for asset in ASSETS:
         st.info(f"{asset}: No signal generated → {reason}")
         continue
 
-    # Build qualified signal
     signal = build_signal(df_1h, pred_1h, (conf_1h+conf_4h)/2, asset, "1H (4H Confirmed)")
     signals.append(signal)
 
-    # Plot Chart
     current_price = df_1h["c"].iloc[-1]
     future_dt = [df_1h["dt"].iloc[-1] + timedelta(hours=i) for i in range(5)]
     future_prices = [current_price + ((pred_1h - current_price)/4)*i for i in range(5)]
@@ -203,7 +213,6 @@ for asset in ASSETS:
                       template="plotly_dark", height=400)
     st.plotly_chart(fig, use_container_width=True)
 
-# Display all qualified signals in a table
 if signals:
     st.subheader("📈 Qualified Signals Table")
     st.dataframe(pd.DataFrame(signals))
