@@ -1,129 +1,281 @@
+# ============================================================
+# AEGIS INTELLIGENCE PRO
+# Institutional-Grade AI Trading Intelligence System
+# ============================================================
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import ccxt
 import plotly.graph_objects as go
-from sklearn.ensemble import RandomForestRegressor
-from datetime import datetime
 
-def get_live_signal(asset="BTC/USDT"):
-    # Insert your actual model logic here
-    # Example mock return:
-    return "LONG", 92.5, "12:00:00"
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import Ridge
+from sklearn.metrics import mean_absolute_error
+from datetime import datetime, timedelta
+import requests
+import sqlite3
+import math
 
-if __name__ == "__main__":
-    # Your existing UI code goes inside this block
-    # This prevents the UI from rendering when Nexus Forge imports the file
-    pass 
+# ============================================================
+# PAGE CONFIG
+# ============================================================
 
+st.set_page_config(
+    page_title="Aegis Intelligence Pro",
+    page_icon="🧠",
+    layout="wide"
+)
 
-# 1. Page Configuration
-st.set_page_config(page_title="Aegis Intelligence | AI Hub", page_icon="🧠", layout="wide")
+# ============================================================
+# SECURITY GATE
+# ============================================================
 
-# 2. Security Gate
 if "authenticated" not in st.session_state:
     st.switch_page("Home.py")
     st.stop()
 
-# --- AI CORE: ENSEMBLE PREDICTOR ---
-def train_and_predict(df):
-    """
-    Implements a Random Forest & EMA Ensemble logic for 2026 High-Accuracy inference.
-    """
-    # Feature Engineering
-    df['ema_9'] = df['c'].ewm(span=9).mean()
-    df['ema_21'] = df['c'].ewm(span=21).mean()
-    df['vol_change'] = df['v'].pct_change()
-    df['target'] = df['c'].shift(-1) # Future price
-    
-    # Preprocessing
-    df_train = df.dropna()
-    features = ['c', 'v', 'ema_9', 'ema_21', 'vol_change']
-    X = df_train[features]
-    y = df_train['target']
-    
-    # Model: Random Forest (Industry choice for non-linear crypto volatility)
-    model = RandomForestRegressor(n_estimators=100, random_state=42)
-    model.fit(X, y)
-    
-    # Inference
-    last_features = df[features].iloc[-1].values.reshape(1, -1)
-    prediction = model.predict(last_features)[0]
-    
-    # Confidence Score (Based on EMA spread and Volatility Z-Score)
-    ema_diff = abs(df['ema_9'].iloc[-1] - df['ema_21'].iloc[-1]) / df['ema_21'].iloc[-1]
-    confidence = min(98.5, 75 + (ema_diff * 500))
-    
-    return prediction, confidence
+# ============================================================
+# TELEGRAM CONFIG (REQUIRED)
+# ============================================================
 
-# --- DATA AGGREGATION ---
-def fetch_ml_data(symbol):
+TELEGRAM_CONFIG = {
+    "enabled": True,
+    "bot_token": "PUT_YOUR_BOT_TOKEN_HERE",
+    "chat_id": "PUT_YOUR_CHAT_ID_HERE"
+}
+
+# ============================================================
+# DATABASE (SIGNAL AUDIT TRAIL)
+# ============================================================
+
+conn = sqlite3.connect("aegis_signals.db", check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS signals (
+    timestamp TEXT,
+    asset TEXT,
+    direction TEXT,
+    entry REAL,
+    stop REAL,
+    target REAL,
+    confidence REAL,
+    regime TEXT
+)
+""")
+conn.commit()
+
+# ============================================================
+# UTILITIES
+# ============================================================
+
+def send_telegram(msg: str):
+    if not TELEGRAM_CONFIG["enabled"]:
+        return
     try:
-        ex = ccxt.bitget()
-        ohlcv = ex.fetch_ohlcv(symbol, timeframe='1h', limit=200)
-        df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-        df['dt'] = pd.to_datetime(df['ts'], unit='ms')
-        return df
+        url = f"https://api.telegram.org/bot{TELEGRAM_CONFIG['bot_token']}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CONFIG["chat_id"], "text": msg}
+        requests.post(url, json=payload, timeout=5)
     except:
-        return pd.DataFrame()
+        pass
 
-# --- UI LAYOUT ---
-st.title("🧠 Aegis Intelligence: Predictive Command")
-st.write("Machine Learning Command Center (Ensemble inference: Random Forest + EMA Confluence)")
 
-# Asset Selection from Unified Library
-asset_lib = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT", "ADA/USDT", "LINK/USDT", "TRX/USDT", "SUI/USDT", "PEPE/USDT"]
-target_asset = st.selectbox("🎯 Select Target for Deep AI Inference", asset_lib)
+def atr(df, period=14):
+    tr = np.maximum(
+        df['h'] - df['l'],
+        np.maximum(
+            abs(df['h'] - df['c'].shift()),
+            abs(df['l'] - df['c'].shift())
+        )
+    )
+    return tr.rolling(period).mean()
+
+
+# ============================================================
+# DATA FETCH (CACHED)
+# ============================================================
+
+@st.cache_data(ttl=300)
+def fetch_ohlcv(symbol, timeframe="1h", limit=300):
+    ex = ccxt.bitget()
+    ohlcv = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    df = pd.DataFrame(ohlcv, columns=["ts","o","h","l","c","v"])
+    df["dt"] = pd.to_datetime(df["ts"], unit="ms")
+    return df
+
+
+# ============================================================
+# FEATURE ENGINEERING
+# ============================================================
+
+def build_features(df):
+    df = df.copy()
+    df["ema_9"] = df["c"].ewm(span=9).mean()
+    df["ema_21"] = df["c"].ewm(span=21).mean()
+    df["ema_50"] = df["c"].ewm(span=50).mean()
+    df["vol_chg"] = df["v"].pct_change()
+    df["atr"] = atr(df)
+    df["target"] = df["c"].shift(-1)
+    return df.dropna()
+
+
+# ============================================================
+# REGIME DETECTION
+# ============================================================
+
+def detect_regime(df):
+    vol = df["atr"].iloc[-1] / df["c"].iloc[-1]
+    trend = abs(df["ema_9"].iloc[-1] - df["ema_50"].iloc[-1]) / df["c"].iloc[-1]
+
+    if vol < 0.003:
+        return "LOW_VOL"
+    if trend > 0.01:
+        return "TRENDING"
+    return "RANGING"
+
+
+# ============================================================
+# WALK-FORWARD ENSEMBLE MODEL
+# ============================================================
+
+def walk_forward_ensemble(df):
+    features = ["c","v","ema_9","ema_21","ema_50","vol_chg","atr"]
+    split = int(len(df) * 0.8)
+
+    train = df.iloc[:split]
+    test = df.iloc[split:]
+
+    X_train, y_train = train[features], train["target"]
+    X_test, y_test = test[features], test["target"]
+
+    models = {
+        "rf": RandomForestRegressor(n_estimators=150, random_state=42),
+        "gb": GradientBoostingRegressor(),
+        "ridge": Ridge(alpha=1.0)
+    }
+
+    preds = []
+    errors = []
+
+    for m in models.values():
+        m.fit(X_train, y_train)
+        p = m.predict(X_test)
+        preds.append(p[-1])
+        errors.append(mean_absolute_error(y_test, m.predict(X_test)))
+
+    weights = np.array([1/e for e in errors])
+    weights /= weights.sum()
+
+    final_pred = np.dot(preds, weights)
+
+    directional_hits = np.mean(
+        np.sign(test["target"] - test["c"]) ==
+        np.sign(np.array(preds).mean() - test["c"].iloc[-1])
+    )
+
+    confidence = min(99.0, directional_hits * 100)
+
+    return final_pred, confidence
+
+
+# ============================================================
+# EXECUTION ENGINE
+# ============================================================
+
+def build_trade(df, prediction, confidence, asset):
+    price = df["c"].iloc[-1]
+    atr_val = df["atr"].iloc[-1]
+
+    direction = "NO TRADE"
+    if confidence > 60:
+        direction = "LONG" if prediction > price else "SHORT"
+
+    if direction == "NO TRADE":
+        return None
+
+    risk_pct = 0.01
+    stop_dist = atr_val * 1.5
+    target_dist = stop_dist * 2
+
+    entry = price
+    stop = entry - stop_dist if direction == "LONG" else entry + stop_dist
+    target = entry + target_dist if direction == "LONG" else entry - target_dist
+
+    cursor.execute(
+        "INSERT INTO signals VALUES (?,?,?,?,?,?,?,?)",
+        (
+            datetime.utcnow().isoformat(),
+            asset,
+            direction,
+            entry,
+            stop,
+            target,
+            confidence,
+            detect_regime(df)
+        )
+    )
+    conn.commit()
+
+    return {
+        "direction": direction,
+        "entry": entry,
+        "stop": stop,
+        "target": target,
+        "confidence": confidence
+    }
+
+
+# ============================================================
+# UI
+# ============================================================
+
+st.title("🧠 Aegis Intelligence Pro")
+st.caption("Institutional-Grade AI Trading System")
+
+asset = st.selectbox(
+    "Select Asset",
+    ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","DOGE/USDT"]
+)
+
+if st.button("🚀 Run AI Scan"):
+    df_raw = fetch_ohlcv(asset)
+    df = build_features(df_raw)
+
+    regime = detect_regime(df)
+    pred, conf = walk_forward_ensemble(df)
+    trade = build_trade(df, pred, conf, asset)
+
+    st.subheader("📊 AI Verdict")
+    st.metric("Confidence", f"{conf:.2f}%")
+    st.info(f"Market Regime: {regime}")
+
+    if trade:
+        st.success(trade["direction"])
+        st.write(trade)
+
+        send_telegram(
+            f"""
+AEGIS SIGNAL
+Asset: {asset}
+Direction: {trade['direction']}
+Entry: {trade['entry']:.2f}
+Stop: {trade['stop']:.2f}
+Target: {trade['target']:.2f}
+Confidence: {trade['confidence']:.2f}%
+"""
+        )
+    else:
+        st.warning("No Trade — Insufficient Edge")
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df["dt"], y=df["c"], name="Price"))
+    fig.update_layout(template="plotly_dark", height=400)
+    st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# FOOTER
+# ============================================================
 
 st.write("---")
-
-# Main Action Button
-if st.button("🚀 Execute AI Deep Scan"):
-    with st.spinner(f"Running Ensemble Training for {target_asset}..."):
-        df = fetch_ml_data(target_asset)
-        
-        if not df.empty:
-            pred_price, conf_score = train_and_predict(df)
-            current_price = df['c'].iloc[-1]
-            move_pct = ((pred_price - current_price) / current_price) * 100
-            
-            # 1. Recommendation Logic (High Accuracy Threshold: 85%)
-            st.subheader("🤖 AI Verdict & Signal")
-            v1, v2, v3 = st.columns(3)
-            
-            signal = "STABLE / WAIT"
-            color = "white"
-            
-            if conf_score > 85:
-                if move_pct > 0.5:
-                    signal, color = "STRONG BUY", "#00FFCC"
-                elif move_pct < -0.5:
-                    signal, color = "STRONG SELL", "#FF4B4B"
-            
-            v1.markdown(f"<h1 style='color: {color};'>{signal}</h1>", unsafe_allow_html=True)
-            v2.metric("AI Confidence", f"{conf_score:.2f}%")
-            v3.metric("Predicted Move", f"{move_pct:.2f}%", delta=f"${pred_price - current_price:,.2f}")
-            
-            # 2. Visual Prediction Path
-            st.write("---")
-            st.subheader("📈 Projected Price Trajectory (Next 4h)")
-            
-            future_dt = [df['dt'].iloc[-1] + pd.Timedelta(hours=i) for i in range(5)]
-            future_prices = [current_price + ( (pred_price - current_price) / 4 * i) for i in range(5)]
-            
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df['dt'].tail(30), y=df['c'].tail(30), name="Actual Price", line=dict(color="cyan")))
-            fig.add_trace(go.Scatter(x=future_dt, y=future_prices, name="AI Projection", line=dict(dash='dash', color='orange')))
-            fig.update_layout(template="plotly_dark", height=400, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-            
-            
-            
-        else:
-            st.error("Data node offline. Check Bitget API Vault in Nexus Core.")
-
-# 3. Model Performance Tracking (Bottom Bar)
-st.write("---")
-col_perf1, col_perf2 = st.columns(2)
-col_perf1.info("🛠️ Current Model: Random Forest Ensemble (Iter: 100)")
-col_perf2.info("📊 Historical System Accuracy (Backtest): 82.4% (Last 30 Days)")
+st.info("Model: Walk-Forward Ensemble | Execution: Risk-Adjusted | Alerts: Telegram")
