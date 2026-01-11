@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -7,7 +8,27 @@ from sklearn.ensemble import RandomForestRegressor
 import plotly.graph_objects as go
 
 # -----------------------------
-# 1️⃣ ATR Function
+# 1️⃣ Journal Setup
+# -----------------------------
+JOURNAL_FILE = "signal_journal.csv"
+
+def log_signal(entry: dict):
+    """Append a new row to the journal CSV."""
+    entry['timestamp'] = datetime.utcnow()
+    df_entry = pd.DataFrame([entry])
+    if os.path.exists(JOURNAL_FILE):
+        df_entry.to_csv(JOURNAL_FILE, mode='a', header=False, index=False)
+    else:
+        df_entry.to_csv(JOURNAL_FILE, mode='w', header=True, index=False)
+
+def read_journal():
+    """Read the journal CSV into a DataFrame."""
+    if os.path.exists(JOURNAL_FILE):
+        return pd.read_csv(JOURNAL_FILE, parse_dates=['timestamp'])
+    return pd.DataFrame()
+
+# -----------------------------
+# 2️⃣ ATR Function
 # -----------------------------
 def atr(df, n=14):
     if df.empty:
@@ -19,7 +40,7 @@ def atr(df, n=14):
     return tr.rolling(n).mean()
 
 # -----------------------------
-# 2️⃣ Feature Engineering
+# 3️⃣ Feature Engineering
 # -----------------------------
 def features(df):
     if df.empty:
@@ -33,12 +54,9 @@ def features(df):
     return df.dropna()
 
 # -----------------------------
-# 3️⃣ Version-Safe Exchange Loader
+# 4️⃣ Version-Safe Exchange Loader (Huobi Removed)
 # -----------------------------
 def get_exchange_class(exchange_names):
-    """
-    Tries multiple class names and returns the first available ccxt.Exchange class.
-    """
     for name in exchange_names:
         try:
             return getattr(ccxt, name.lower())
@@ -46,12 +64,12 @@ def get_exchange_class(exchange_names):
             continue
     return None
 
+# Only 4 exchanges now: XT, Bitget, Gate.io, KuCoin
 EXCHANGE_LOOKUP = {
     "XT": ["xt"],
     "Bitget": ["bitget"],
     "Gate.io": ["gateio"],
-    "KuCoin": ["kucoin"],
-    "Huobi": ["huobi", "huobipro"]
+    "KuCoin": ["kucoin"]
 }
 
 EXCHANGE_CLASSES = {}
@@ -63,7 +81,7 @@ for name, possible_names in EXCHANGE_LOOKUP.items():
         st.warning(f"⚠️ {name} exchange not found in your CCXT version. Skipping.")
 
 # -----------------------------
-# 4️⃣ Fetch OHLCV
+# 5️⃣ Fetch OHLCV
 # -----------------------------
 def safe_fetch(symbol, exchange_name, timeframe='1h', limit=200):
     if exchange_name not in EXCHANGE_CLASSES:
@@ -80,7 +98,7 @@ def safe_fetch(symbol, exchange_name, timeframe='1h', limit=200):
         return pd.DataFrame(columns=['ts','o','h','l','c','v','dt'])
 
 # -----------------------------
-# 5️⃣ Ensemble Signal (RF + EMA)
+# 6️⃣ Ensemble Signal (RF + EMA)
 # -----------------------------
 def ensemble_signal(df):
     if df.empty:
@@ -100,9 +118,9 @@ def ensemble_signal(df):
     return pred_price, confidence
 
 # -----------------------------
-# 6️⃣ Build Signal
+# 7️⃣ Build Signal
 # -----------------------------
-def build_signal(df, pred_price, conf, asset, exchange, timeframe_label):
+def build_signal(df, pred_price, conf, asset, exchange, timeframe_label, reason="Qualified"):
     if df.empty:
         return None
     return {
@@ -110,15 +128,16 @@ def build_signal(df, pred_price, conf, asset, exchange, timeframe_label):
         "exchange": exchange,
         "timeframe": timeframe_label,
         "bias": "LONG" if pred_price > df["c"].iloc[-1] else "SHORT",
-        "price": df["c"].iloc[-1],
+        "price": df["c"].iloc[-1] if not df.empty else 0,
         "objective": pred_price,
-        "invalidation": df["c"].iloc[-1] * 0.995,
+        "invalidation": df["c"].iloc[-1] * 0.995 if not df.empty else 0,
         "confidence": conf,
-        "regime": "RF+EMA Ensemble"
+        "regime": "RF+EMA Ensemble",
+        "reason": reason
     }
 
 # -----------------------------
-# 7️⃣ Assets
+# 8️⃣ Assets
 # -----------------------------
 ASSETS = [
     "BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","DOGE/USDT",
@@ -128,14 +147,14 @@ ASSETS = [
 ]
 
 # -----------------------------
-# 8️⃣ Streamlit Page
+# 9️⃣ Streamlit Page
 # -----------------------------
 st.set_page_config(page_title="All-Exchange AI Signal Scanner", layout="wide")
-st.title("🧠 All-Exchange AI Signal Dashboard")
-st.markdown("Scans all exchanges for all assets and returns the best-qualified signals.")
+st.title("🧠 All-Exchange AI Signal Dashboard with Journal")
+st.markdown("Scans all exchanges for all assets and logs signals in the journal.")
 
 # -----------------------------
-# 9️⃣ Scan All Exchanges Mode
+# 10️⃣ Scan All Exchanges Mode
 # -----------------------------
 signals = []
 
@@ -148,6 +167,8 @@ for asset in ASSETS:
         df_4h = features(safe_fetch(asset, exchange_name, "4h"))
 
         if df_1h.empty or df_4h.empty:
+            entry = build_signal(df_1h, 0, 0, asset, exchange_name, "1H/4H", reason="Missing OHLCV")
+            if entry: log_signal(entry)
             continue
 
         pred_1h, conf_1h = ensemble_signal(df_1h)
@@ -164,20 +185,23 @@ for asset in ASSETS:
             reason = f"Direction mismatch (1H={dir_1h},4H={dir_4h})"
 
         if reason:
+            entry = build_signal(df_1h, pred_1h, (conf_1h+conf_4h)/2, asset, exchange_name, "1H/4H", reason=reason)
+            if entry: log_signal(entry)
             continue
 
         avg_conf = (conf_1h + conf_4h)/2
-        if avg_conf > best_conf:
+        best_signal = build_signal(df_1h, pred_1h, avg_conf, asset, exchange_name, "1H (4H Confirmed)")
+        if best_signal and avg_conf > best_conf:
             best_conf = avg_conf
-            best_signal = build_signal(df_1h, pred_1h, avg_conf, asset, exchange_name, "1H (4H Confirmed)")
 
     if best_signal:
         signals.append(best_signal)
+        log_signal(best_signal)
     else:
         st.info(f"{asset}: No qualified signal on any exchange.")
 
 # -----------------------------
-# 10️⃣ Display Signals & Charts
+# 11️⃣ Display Signals & Charts
 # -----------------------------
 if signals:
     st.subheader("📈 Best-Qualified Signals Across Exchanges")
@@ -204,3 +228,13 @@ if signals:
         st.plotly_chart(fig, use_container_width=True)
 else:
     st.warning("No qualified signals under current market conditions on any exchange.")
+
+# -----------------------------
+# 12️⃣ Display Journal
+# -----------------------------
+st.subheader("📝 Signal Journal")
+journal_df = read_journal()
+if not journal_df.empty:
+    st.dataframe(journal_df.sort_values(by="timestamp", ascending=False))
+else:
+    st.info("Journal is empty. Signals will be logged automatically.")
