@@ -33,23 +33,29 @@ def features(df):
     return df.dropna()
 
 # -----------------------------
-# 3️⃣ Fetch OHLCV
+# 3️⃣ Fetch OHLCV (Multi-Exchange)
 # -----------------------------
+EXCHANGE_CLASSES = {
+    "XT": ccxt.xt,
+    "Bitget": ccxt.bitget,
+    "Gate.io": ccxt.gateio,
+    "KuCoin": ccxt.kucoin,
+    "Huobi": ccxt.huobipro
+}
+
 def fetch_ohlcv(symbol, exchange_name, timeframe='1h', limit=200):
     try:
-        if exchange_name.lower() == "xt":
-            ex = ccxt.xt({'enableRateLimit': True})
-        elif exchange_name.lower() == "bitget":
-            ex = ccxt.bitget({'enableRateLimit': True})
-        else:
+        ex_class = EXCHANGE_CLASSES.get(exchange_name)
+        if not ex_class:
             st.error(f"Exchange {exchange_name} not supported")
             return pd.DataFrame()
+        ex = ex_class({'enableRateLimit': True})
         ohlcv = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['ts','o','h','l','c','v'])
         df['dt'] = pd.to_datetime(df['ts'], unit='ms')
         return df
     except Exception as e:
-        st.warning(f"{symbol} {timeframe} fetch failed: {e}")
+        st.warning(f"{symbol} {timeframe} fetch failed on {exchange_name}: {e}")
         return pd.DataFrame(columns=['ts','o','h','l','c','v','dt'])
 
 # -----------------------------
@@ -59,7 +65,7 @@ def safe_fetch(symbol, exchange_name, timeframe='1h', limit=200):
     df = fetch_ohlcv(symbol, exchange_name, timeframe, limit)
     expected_cols = {"ts","o","h","l","c","v","dt"}
     if df.empty or not expected_cols.issubset(df.columns):
-        st.info(f"{symbol} {timeframe}: OHLCV missing or incomplete")
+        st.info(f"{symbol} {timeframe}: OHLCV missing or incomplete on {exchange_name}")
         return pd.DataFrame(columns=list(expected_cols))
     return df
 
@@ -86,11 +92,12 @@ def ensemble_signal(df):
 # -----------------------------
 # 6️⃣ Build Signal
 # -----------------------------
-def build_signal(df, pred_price, conf, asset, timeframe_label):
+def build_signal(df, pred_price, conf, asset, exchange, timeframe_label):
     if df.empty:
         return None
     return {
         "asset": asset,
+        "exchange": exchange,
         "timeframe": timeframe_label,
         "bias": "LONG" if pred_price > df["c"].iloc[-1] else "SHORT",
         "price": df["c"].iloc[-1],
@@ -111,110 +118,81 @@ ASSETS = [
 ]
 
 # -----------------------------
-# 8️⃣ Streamlit Page & Exchange Selector
+# 8️⃣ Streamlit Page
 # -----------------------------
-st.set_page_config(page_title="Multi-Exchange AI Signal Scanner", layout="wide")
-st.title("🧠 Multi-Exchange AI Signal Dashboard")
-
-exchange_choice = st.selectbox("Select Exchange", ["XT", "Bitget"])
-st.markdown("---")
+st.set_page_config(page_title="All-Exchange AI Signal Scanner", layout="wide")
+st.title("🧠 All-Exchange AI Signal Dashboard")
+st.markdown("This dashboard scans all exchanges for all assets and returns the best-qualified signals.")
 
 # -----------------------------
-# 9️⃣ Summary Dashboard
-# -----------------------------
-summary = []
-
-for asset in ASSETS:
-    df_1h = features(safe_fetch(asset, exchange_choice, "1h"))
-    df_4h = features(safe_fetch(asset, exchange_choice, "4h"))
-
-    if df_1h.empty or df_4h.empty:
-        summary.append({"asset": asset, "status": "No Signal", "reason": "Missing OHLCV"})
-        continue
-
-    pred_1h, conf_1h = ensemble_signal(df_1h)
-    pred_4h, conf_4h = ensemble_signal(df_4h)
-    dir_1h = "LONG" if pred_1h > df_1h["c"].iloc[-1] else "SHORT"
-    dir_4h = "LONG" if pred_4h > df_4h["c"].iloc[-1] else "SHORT"
-
-    reason = ""
-    if conf_1h <= 60:
-        reason = f"1H confidence too low ({conf_1h:.2f}%)"
-    elif conf_4h <= 60:
-        reason = f"4H confidence too low ({conf_4h:.2f}%)"
-    elif dir_1h != dir_4h:
-        reason = f"Direction mismatch (1H={dir_1h},4H={dir_4h})"
-
-    status = "Signal Generated" if not reason else "No Signal"
-    summary.append({"asset": asset, "status": status, "reason": reason if reason else "-"})
-
-summary_df = pd.DataFrame(summary)
-
-# Color-coded summary
-def color_summary(row):
-    if row['status'] == "Signal Generated":
-        return ['background-color: #00FFCC']*3
-    elif "Direction mismatch" in row['reason']:
-        return ['background-color: #FF6B6B']*3
-    elif "confidence too low" in row['reason']:
-        return ['background-color: #FFA500']*3
-    elif "Missing OHLCV" in row['reason']:
-        return ['background-color: #FF4B4B']*3
-    else:
-        return ['background-color: white']*3
-
-st.subheader("📊 Multi-Asset Signal Summary (Color-Coded)")
-st.dataframe(summary_df.style.apply(color_summary, axis=1))
-st.markdown("**❗ Filters Blocking Signals:**")
-st.write(summary_df['reason'].value_counts())
-
-# -----------------------------
-# 10️⃣ Generate Signals & Charts
+# 9️⃣ Scan All Exchanges Mode
 # -----------------------------
 signals = []
 
 for asset in ASSETS:
-    df_1h = features(safe_fetch(asset, exchange_choice, "1h"))
-    df_4h = features(safe_fetch(asset, exchange_choice, "4h"))
+    best_signal = None
+    best_conf = 0
+    best_exchange = None
 
-    if df_1h.empty or df_4h.empty:
-        continue
+    for exchange_name in EXCHANGE_CLASSES.keys():
+        df_1h = features(safe_fetch(asset, exchange_name, "1h"))
+        df_4h = features(safe_fetch(asset, exchange_name, "4h"))
 
-    pred_1h, conf_1h = ensemble_signal(df_1h)
-    pred_4h, conf_4h = ensemble_signal(df_4h)
-    dir_1h = "LONG" if pred_1h > df_1h["c"].iloc[-1] else "SHORT"
-    dir_4h = "LONG" if pred_4h > df_4h["c"].iloc[-1] else "SHORT"
+        if df_1h.empty or df_4h.empty:
+            continue
 
-    reason = ""
-    if conf_1h <= 60:
-        reason = f"1H confidence too low ({conf_1h:.2f}%)"
-    elif conf_4h <= 60:
-        reason = f"4H confidence too low ({conf_4h:.2f}%)"
-    elif dir_1h != dir_4h:
-        reason = f"Direction mismatch (1H={dir_1h},4H={dir_4h})"
+        pred_1h, conf_1h = ensemble_signal(df_1h)
+        pred_4h, conf_4h = ensemble_signal(df_4h)
+        dir_1h = "LONG" if pred_1h > df_1h["c"].iloc[-1] else "SHORT"
+        dir_4h = "LONG" if pred_4h > df_4h["c"].iloc[-1] else "SHORT"
 
-    if reason:
-        st.info(f"{asset}: No signal generated → {reason}")
-        continue
+        reason = ""
+        if conf_1h <= 60:
+            reason = f"1H confidence too low ({conf_1h:.2f}%)"
+        elif conf_4h <= 60:
+            reason = f"4H confidence too low ({conf_4h:.2f}%)"
+        elif dir_1h != dir_4h:
+            reason = f"Direction mismatch (1H={dir_1h},4H={dir_4h})"
 
-    signal = build_signal(df_1h, pred_1h, (conf_1h+conf_4h)/2, asset, "1H (4H Confirmed)")
-    signals.append(signal)
+        if reason:
+            continue
 
-    current_price = df_1h["c"].iloc[-1]
-    future_dt = [df_1h["dt"].iloc[-1] + timedelta(hours=i) for i in range(5)]
-    future_prices = [current_price + ((pred_1h - current_price)/4)*i for i in range(5)]
+        avg_conf = (conf_1h + conf_4h)/2
+        if avg_conf > best_conf:
+            best_conf = avg_conf
+            best_signal = build_signal(df_1h, pred_1h, avg_conf, asset, exchange_name, "1H (4H Confirmed)")
+            best_exchange = exchange_name
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_1h["dt"].tail(30), y=df_1h["c"].tail(30),
-                             name="Actual Price", line=dict(color="cyan")))
-    fig.add_trace(go.Scatter(x=future_dt, y=future_prices,
-                             name="Predicted Move", line=dict(color="orange", dash="dash")))
-    fig.update_layout(title=f"{asset} Signal Chart | Bias: {signal['bias']} | Confidence: {signal['confidence']:.2f}%",
-                      template="plotly_dark", height=400)
-    st.plotly_chart(fig, use_container_width=True)
+    if best_signal:
+        signals.append(best_signal)
+    else:
+        st.info(f"{asset}: No qualified signal on any exchange.")
 
+# -----------------------------
+# 10️⃣ Display Signals & Charts
+# -----------------------------
 if signals:
-    st.subheader("📈 Qualified Signals Table")
+    st.subheader("📈 Best-Qualified Signals Across Exchanges")
     st.dataframe(pd.DataFrame(signals))
+
+    for sig in signals:
+        asset = sig['asset']
+        exchange_name = sig['exchange']
+        df_1h = features(safe_fetch(asset, exchange_name, "1h"))
+        if df_1h.empty:
+            continue
+
+        current_price = df_1h["c"].iloc[-1]
+        future_dt = [df_1h["dt"].iloc[-1] + timedelta(hours=i) for i in range(5)]
+        future_prices = [current_price + ((sig['objective'] - current_price)/4)*i for i in range(5)]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df_1h["dt"].tail(30), y=df_1h["c"].tail(30),
+                                 name="Actual Price", line=dict(color="cyan")))
+        fig.add_trace(go.Scatter(x=future_dt, y=future_prices,
+                                 name="Predicted Move", line=dict(color="orange", dash="dash")))
+        fig.update_layout(title=f"{asset} | {exchange_name} | Bias: {sig['bias']} | Confidence: {sig['confidence']:.2f}%",
+                          template="plotly_dark", height=400)
+        st.plotly_chart(fig, use_container_width=True)
 else:
-    st.warning("No qualified signals under current market conditions. Check reasons above.")
+    st.warning("No qualified signals under current market conditions on any exchange.")
