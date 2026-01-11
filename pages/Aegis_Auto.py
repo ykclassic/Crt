@@ -33,23 +33,44 @@ def features(df):
     return df.dropna()
 
 # -----------------------------
-# 3️⃣ Fetch OHLCV (Multi-Exchange)
+# 3️⃣ Version-Safe Exchange Loader
 # -----------------------------
-EXCHANGE_CLASSES = {
-    "XT": ccxt.xt,
-    "Bitget": ccxt.bitget,
-    "Gate.io": ccxt.gateio,
-    "KuCoin": ccxt.kucoin,
-    "Huobi": ccxt.huobipro
+def get_exchange_class(exchange_names):
+    """
+    Tries multiple class names and returns the first available ccxt.Exchange class.
+    """
+    for name in exchange_names:
+        try:
+            return getattr(ccxt, name.lower())
+        except AttributeError:
+            continue
+    return None
+
+EXCHANGE_LOOKUP = {
+    "XT": ["xt"],
+    "Bitget": ["bitget"],
+    "Gate.io": ["gateio"],
+    "KuCoin": ["kucoin"],
+    "Huobi": ["huobi", "huobipro"]
 }
 
-def fetch_ohlcv(symbol, exchange_name, timeframe='1h', limit=200):
+EXCHANGE_CLASSES = {}
+for name, possible_names in EXCHANGE_LOOKUP.items():
+    ex_class = get_exchange_class(possible_names)
+    if ex_class:
+        EXCHANGE_CLASSES[name] = ex_class
+    else:
+        st.warning(f"⚠️ {name} exchange not found in your CCXT version. Skipping.")
+
+# -----------------------------
+# 4️⃣ Fetch OHLCV
+# -----------------------------
+def safe_fetch(symbol, exchange_name, timeframe='1h', limit=200):
+    if exchange_name not in EXCHANGE_CLASSES:
+        st.error(f"Exchange {exchange_name} not loaded correctly")
+        return pd.DataFrame()
     try:
-        ex_class = EXCHANGE_CLASSES.get(exchange_name)
-        if not ex_class:
-            st.error(f"Exchange {exchange_name} not supported")
-            return pd.DataFrame()
-        ex = ex_class({'enableRateLimit': True})
+        ex = EXCHANGE_CLASSES[exchange_name]({'enableRateLimit': True})
         ohlcv = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['ts','o','h','l','c','v'])
         df['dt'] = pd.to_datetime(df['ts'], unit='ms')
@@ -57,17 +78,6 @@ def fetch_ohlcv(symbol, exchange_name, timeframe='1h', limit=200):
     except Exception as e:
         st.warning(f"{symbol} {timeframe} fetch failed on {exchange_name}: {e}")
         return pd.DataFrame(columns=['ts','o','h','l','c','v','dt'])
-
-# -----------------------------
-# 4️⃣ Safe Fetch Wrapper
-# -----------------------------
-def safe_fetch(symbol, exchange_name, timeframe='1h', limit=200):
-    df = fetch_ohlcv(symbol, exchange_name, timeframe, limit)
-    expected_cols = {"ts","o","h","l","c","v","dt"}
-    if df.empty or not expected_cols.issubset(df.columns):
-        st.info(f"{symbol} {timeframe}: OHLCV missing or incomplete on {exchange_name}")
-        return pd.DataFrame(columns=list(expected_cols))
-    return df
 
 # -----------------------------
 # 5️⃣ Ensemble Signal (RF + EMA)
@@ -122,7 +132,7 @@ ASSETS = [
 # -----------------------------
 st.set_page_config(page_title="All-Exchange AI Signal Scanner", layout="wide")
 st.title("🧠 All-Exchange AI Signal Dashboard")
-st.markdown("This dashboard scans all exchanges for all assets and returns the best-qualified signals.")
+st.markdown("Scans all exchanges for all assets and returns the best-qualified signals.")
 
 # -----------------------------
 # 9️⃣ Scan All Exchanges Mode
@@ -132,7 +142,6 @@ signals = []
 for asset in ASSETS:
     best_signal = None
     best_conf = 0
-    best_exchange = None
 
     for exchange_name in EXCHANGE_CLASSES.keys():
         df_1h = features(safe_fetch(asset, exchange_name, "1h"))
@@ -161,7 +170,6 @@ for asset in ASSETS:
         if avg_conf > best_conf:
             best_conf = avg_conf
             best_signal = build_signal(df_1h, pred_1h, avg_conf, asset, exchange_name, "1H (4H Confirmed)")
-            best_exchange = exchange_name
 
     if best_signal:
         signals.append(best_signal)
