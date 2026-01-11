@@ -1,27 +1,39 @@
 # ==========================
-# MULTI-ASSET SIGNAL SCAN WITH REASON LOGGING
+# MULTI-ASSET SIGNAL SCAN (ROBUST + REASON LOGGING)
 # ==========================
 
-# Define 20 assets for scanning
+# 20 trading pairs
 ASSETS = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT",
-    "ADA/USDT", "LINK/USDT", "TRX/USDT", "SUI/USDT", "PEPE/USDT",
-    "BNB/USDT", "MATIC/USDT", "LTC/USDT", "AVAX/USDT", "UNI/USDT",
-    "ATOM/USDT", "NEAR/USDT", "FTM/USDT", "ALGO/USDT", "VET/USDT"
+    "BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","DOGE/USDT",
+    "ADA/USDT","LINK/USDT","TRX/USDT","SUI/USDT","PEPE/USDT",
+    "BNB/USDT","MATIC/USDT","LTC/USDT","AVAX/USDT","UNI/USDT",
+    "ATOM/USDT","NEAR/USDT","FTM/USDT","ALGO/USDT","VET/USDT"
 ]
 
 signals = []
 
+# Safe fetch wrapper
+def safe_fetch(symbol, timeframe, limit=400):
+    try:
+        df = fetch_ohlcv(symbol, timeframe, limit)
+        if df.empty or set(["ts","o","h","l","c","v","dt"]) - set(df.columns):
+            st.warning(f"{symbol} {timeframe} OHLCV missing or incomplete")
+            return pd.DataFrame(columns=["ts","o","h","l","c","v","dt"])
+        return df
+    except Exception as e:
+        st.warning(f"{symbol} {timeframe} fetch failed: {e}")
+        return pd.DataFrame(columns=["ts","o","h","l","c","v","dt"])
+
 for asset in ASSETS:
     reason = ""
-    
-    # Fetch features for 1H and 4H
-    df_1h = features(fetch_ohlcv(asset, "1h"))
-    df_4h = features(fetch_ohlcv(asset, "4h"))
 
-    # Skip if any timeframe returned empty
+    # Fetch features safely
+    df_1h = features(safe_fetch(asset, "1h"))
+    df_4h = features(safe_fetch(asset, "4h"))
+
+    # Skip if empty
     if df_1h.empty or df_4h.empty:
-        st.warning(f"{asset}: OHLCV data missing for 1H or 4H")
+        st.info(f"{asset}: OHLCV data missing for 1H or 4H")
         continue
 
     # Ensemble predictions and confidence
@@ -32,7 +44,7 @@ for asset in ASSETS:
     dir_1h = "LONG" if pred_1h > df_1h["c"].iloc[-1] else "SHORT"
     dir_4h = "LONG" if pred_4h > df_4h["c"].iloc[-1] else "SHORT"
 
-    # Reason for filtering
+    # Track reason for filtering
     if conf_1h <= 60:
         reason = f"1H confidence too low ({conf_1h:.2f}%)"
     elif conf_4h <= 60:
@@ -45,7 +57,7 @@ for asset in ASSETS:
         signal = build_signal(
             df_1h,
             pred_1h,
-            (conf_1h + conf_4h) / 2,
+            (conf_1h + conf_4h)/2,
             asset,
             "1H (4H Confirmed)"
         )
