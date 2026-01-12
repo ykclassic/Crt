@@ -71,8 +71,8 @@ with st.sidebar:
         st.rerun()
 
 # 7. Header
-st.title("🛡️ Aegis Command Center")
-st.write(f"Environment: Production | Cluster: Main | {time.strftime('%H:%M:%S')}")
+st.title("🛡️ PowerForge 1.0")
+st.write(f"Welcome | Command Center for a profitable Trading Signal| {time.strftime('%H:%M:%S')}")
 st.write("---")
 
 # 8. Updated App Grid (Based on Repository Structure)
@@ -118,4 +118,4 @@ for index, app in enumerate(visible_apps):
                 st.switch_page(f"pages/{filename}.py")
 
 st.write("---")
-st.caption("Aegis Unified Environment v3.5 | Security: AES-256 Vault Active")
+st.caption("PowerForge 1.0 | (c) TechSolute 2026")
