@@ -1,249 +1,181 @@
-import streamlit as st
 import ccxt
 import pandas as pd
 import numpy as np
-import sqlite3
-import requests
+import time
+import threading
 from datetime import datetime, timezone
 
-# ============================================================
+# ============================
 # CONFIGURATION
-# ============================================================
-DB_PATH = "aegis_signals.db"
-TIMEFRAME = "15m"
-LIMIT = 200
-CONFIDENCE_THRESHOLD = 90
+# ============================
 
-EXCHANGES = [
-    ccxt.binance,
-    ccxt.okx,
-    ccxt.bybit
-]
+EXCHANGES = {
+    "bitget": ccxt.bitget(),
+    "gateio": ccxt.gateio(),
+    "xt": ccxt.xt()
+}
 
-# ============================================================
-# SECURITY — SECRETS
-# ============================================================
-def get_secret(key: str):
+SYMBOLS = ["BTC/USDT", "ETH/USDT"]
+TIMEFRAMES = {
+    "entry": "1h",
+    "confirm_1": "4h",
+    "confirm_2": "1d"
+}
+
+SCHEDULER_INTERVAL_SECONDS = 60
+CONFIDENCE_THRESHOLD = 0.65
+MAX_BARS = 200
+
+# ============================
+# HARDENING
+# ============================
+
+for ex in EXCHANGES.values():
+    ex.enableRateLimit = True
+    ex.timeout = 20000
+
+# ============================
+# DATA FETCHING
+# ============================
+
+def fetch_ohlcv(exchange, symbol, timeframe):
     try:
-        return st.secrets[key]
-    except Exception:
+        data = exchange.fetch_ohlcv(symbol, timeframe, limit=MAX_BARS)
+        df = pd.DataFrame(
+            data,
+            columns=["timestamp", "open", "high", "low", "close", "volume"]
+        )
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+        return df
+    except Exception as e:
+        print(f"[DATA ERROR] {exchange.id} {symbol} {timeframe}: {e}")
         return None
 
-TELEGRAM_TOKEN = get_secret("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = get_secret("TELEGRAM_CHAT_ID")
+# ============================
+# TECHNICAL STRUCTURE
+# ============================
 
-# ============================================================
-# DATABASE
-# ============================================================
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS signals (
-                timestamp TEXT,
-                asset TEXT,
-                signal TEXT,
-                confidence REAL,
-                price REAL
-            )
-        """)
-
-def log_signal(asset, signal, confidence, price):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            "INSERT INTO signals VALUES (?, ?, ?, ?, ?)",
-            (
-                datetime.now(timezone.utc).isoformat(),
-                asset,
-                signal,
-                confidence,
-                price
-            )
-        )
-
-# ============================================================
-# MARKET DATA (HARDENED)
-# ============================================================
-@st.cache_data(ttl=60, show_spinner=False)
-def get_ohlcv(symbol: str) -> pd.DataFrame:
-    last_error = None
-
-    for exchange_cls in EXCHANGES:
-        try:
-            exchange = exchange_cls({
-                "enableRateLimit": True,
-                "timeout": 15000,
-                "options": {"defaultType": "spot"}
-            })
-
-            exchange.load_markets()
-
-            if symbol not in exchange.symbols:
-                continue
-
-            data = exchange.fetch_ohlcv(
-                symbol=symbol,
-                timeframe=TIMEFRAME,
-                limit=LIMIT
-            )
-
-            df = pd.DataFrame(
-                data,
-                columns=["ts", "open", "high", "low", "close", "volume"]
-            )
-
-            if len(df) < 50:
-                raise ValueError("Insufficient OHLCV data")
-
-            return df
-
-        except Exception as e:
-            last_error = str(e)
-            continue
-
-    raise RuntimeError(f"All exchanges failed for {symbol}: {last_error}")
-
-# ============================================================
-# INDICATORS
-# ============================================================
-def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    df["ema_fast"] = df["close"].ewm(span=21).mean()
-    df["ema_slow"] = df["close"].ewm(span=55).mean()
-
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    rs = avg_gain / avg_loss
-
-    df["rsi"] = 100 - (100 / (1 + rs))
-
-    tr = np.maximum(
-        df["high"] - df["low"],
-        np.maximum(
-            abs(df["high"] - df["close"].shift()),
-            abs(df["low"] - df["close"].shift())
-        )
+def compute_structure(df):
+    df["ema_fast"] = df["close"].ewm(span=20).mean()
+    df["ema_slow"] = df["close"].ewm(span=50).mean()
+    df["rsi"] = 100 - (
+        100 / (1 + df["close"].pct_change().rolling(14).mean())
     )
-
-    df["atr"] = tr.rolling(14).mean()
     return df
 
-# ============================================================
-# SIGNAL ENGINE
-# ============================================================
-def calculate_confidence(row) -> float:
-    score = 0.0
+def trend_bias(df):
+    if df["ema_fast"].iloc[-1] > df["ema_slow"].iloc[-1]:
+        return 1
+    elif df["ema_fast"].iloc[-1] < df["ema_slow"].iloc[-1]:
+        return -1
+    return 0
 
-    ema_spread = abs(row["ema_fast"] - row["ema_slow"]) / row["close"]
-    score += min(ema_spread * 100, 40)
+# ============================
+# ML CONFIDENCE WEIGHTING
+# ============================
 
-    score += min(abs(row["rsi"] - 50), 30)
+def ml_confidence(entry_df, confirm_4h, confirm_1d):
+    """
+    Deterministic logistic-style confidence scoring
+    NOT a trained model
+    """
 
-    atr_ratio = row["atr"] / row["close"]
-    score += min(atr_ratio * 100, 30)
-
-    return round(min(score, 100), 2)
-
-def generate_signal(df: pd.DataFrame):
-    row = df.iloc[-1]
-    signal = "NO_TRADE"
-
-    if row["ema_fast"] > row["ema_slow"] and row["rsi"] > 55:
-        signal = "LONG"
-    elif row["ema_fast"] < row["ema_slow"] and row["rsi"] < 45:
-        signal = "SHORT"
-
-    confidence = calculate_confidence(row)
-    return signal, confidence, row["close"]
-
-# ============================================================
-# TELEGRAM ALERTS
-# ============================================================
-def send_telegram_alert(message: str) -> bool:
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
+    weights = {
+        "trend_alignment": 0.4,
+        "momentum": 0.3,
+        "volatility": 0.3
     }
 
-    try:
-        r = requests.post(url, json=payload, timeout=10)
-        return r.status_code == 200
-    except Exception:
-        return False
+    entry_trend = trend_bias(entry_df)
+    c4_trend = trend_bias(confirm_4h)
+    c1d_trend = trend_bias(confirm_1d)
 
-# ============================================================
-# STREAMLIT UI
-# ============================================================
-def main():
-    st.set_page_config(
-        page_title="Aegis Sentinel | Real-Time Signal Engine",
-        page_icon="📡",
-        layout="wide"
+    trend_alignment = 1 if entry_trend == c4_trend == c1d_trend else 0
+
+    momentum = min(
+        max((entry_df["rsi"].iloc[-1] - 50) / 50, -1),
+        1
     )
 
-    st.title("📡 Aegis Sentinel – Real-Time Signal Engine")
-    st.caption("Deterministic signals • Multi-exchange fallback • Production hardened")
+    volatility = entry_df["close"].pct_change().std()
+    volatility_score = 1 - min(volatility * 10, 1)
 
-    init_db()
-
-    assets = st.multiselect(
-        "Select Assets",
-        ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
-        default=["BTC/USDT"]
+    raw_score = (
+        weights["trend_alignment"] * trend_alignment +
+        weights["momentum"] * abs(momentum) +
+        weights["volatility"] * volatility_score
     )
 
-    if st.button("🚀 Run Signal Scan"):
-        results = []
+    confidence = 1 / (1 + np.exp(-5 * (raw_score - 0.5)))
+    return round(confidence, 4)
 
-        for asset in assets:
-            try:
-                raw = get_ohlcv(asset)
-                df = compute_indicators(raw)
-                signal, confidence, price = generate_signal(df)
+# ============================
+# SIGNAL ENGINE
+# ============================
 
-                if signal != "NO_TRADE" and confidence >= CONFIDENCE_THRESHOLD:
-                    log_signal(asset, signal, confidence, price)
+def generate_signal(exchange, symbol):
+    entry = fetch_ohlcv(exchange, symbol, TIMEFRAMES["entry"])
+    c4 = fetch_ohlcv(exchange, symbol, TIMEFRAMES["confirm_1"])
+    c1d = fetch_ohlcv(exchange, symbol, TIMEFRAMES["confirm_2"])
 
-                    msg = (
-                        f"🔥 *AEGIS SIGNAL*\n"
-                        f"*Asset:* {asset}\n"
-                        f"*Signal:* {signal}\n"
-                        f"*Confidence:* {confidence}%\n"
-                        f"*Price:* {price}"
-                    )
+    if entry is None or c4 is None or c1d is None:
+        return None
 
-                    sent = send_telegram_alert(msg)
-                    status = "✅ SENT" if sent else "⚠️ NOT SENT"
-                else:
-                    status = "🔇 FILTERED"
+    entry = compute_structure(entry)
+    c4 = compute_structure(c4)
+    c1d = compute_structure(c1d)
 
-            except Exception as e:
-                signal = "N/A"
-                confidence = 0.0
-                status = "❌ DATA ERROR"
+    entry_bias = trend_bias(entry)
 
-            results.append({
-                "Asset": asset,
-                "Signal": signal,
-                "Confidence": confidence,
-                "Status": status
-            })
+    if entry_bias == 0:
+        return None
 
-        st.dataframe(pd.DataFrame(results), use_container_width=True)
+    confidence = ml_confidence(entry, c4, c1d)
 
-    st.caption("Aegis Sentinel • Production Signal Engine • v1.0")
+    if confidence < CONFIDENCE_THRESHOLD:
+        return None
 
-# ============================================================
+    direction = "LONG" if entry_bias == 1 else "SHORT"
+
+    return {
+        "exchange": exchange.id,
+        "symbol": symbol,
+        "direction": direction,
+        "confidence": confidence,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+# ============================
+# AUTO-SCHEDULER
+# ============================
+
+last_signal_cache = {}
+
+def scheduler_loop():
+    while True:
+        for ex in EXCHANGES.values():
+            for symbol in SYMBOLS:
+                key = f"{ex.id}-{symbol}"
+
+                signal = generate_signal(ex, symbol)
+                if signal:
+                    last_time = last_signal_cache.get(key)
+                    current_time = signal["timestamp"]
+
+                    if last_time != current_time:
+                        last_signal_cache[key] = current_time
+                        print("🔥 SIGNAL:", signal)
+
+        time.sleep(SCHEDULER_INTERVAL_SECONDS)
+
+# ============================
 # ENTRY POINT
-# ============================================================
+# ============================
+
 if __name__ == "__main__":
-    main()
+    print("🚀 Signal Engine Started (ML Confidence + Auto Scheduler)")
+    scheduler_thread = threading.Thread(target=scheduler_loop, daemon=True)
+    scheduler_thread.start()
+
+    while True:
+        time.sleep(1)
