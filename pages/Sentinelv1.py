@@ -9,8 +9,8 @@ import sqlite3
 # STREAMLIT CONFIG
 # ============================
 st.set_page_config(page_title="Aegis Sentinel Pro", layout="wide")
-st.title("📡 Aegis Sentinel – Advanced Signal Engine + Backtesting")
-st.caption("1H Entry • 4H / 1D Confirmation • ML Confidence • TP/SL • Advanced Indicators")
+st.title("📡 Aegis Sentinel – Advanced Signal Engine + Full Backtesting")
+st.caption("1H Entry • 4H/1D Confirmation • ML Confidence • TP/SL • Multi-Exchange Backtest & Analytics")
 
 # ============================
 # DATABASE SETUP
@@ -92,10 +92,8 @@ def compute_structure(df):
     df["ema_slow"] = df["close"].ewm(span=ema_slow_span).mean()
     df["rsi"] = 100 - (100 / (1 + df["close"].pct_change().rolling(rsi_period).mean()))
     df["atr"] = df["high"].rolling(14).max() - df["low"].rolling(14).min()
-    # MACD
     df["macd"] = df["close"].ewm(span=macd_fast).mean() - df["close"].ewm(span=macd_slow).mean()
     df["macd_signal"] = df["macd"].ewm(span=macd_signal).mean()
-    # Bollinger Bands
     df["bb_mid"] = df["close"].rolling(bollinger_period).mean()
     df["bb_upper"] = df["bb_mid"] + bollinger_std*df["close"].rolling(bollinger_period).std()
     df["bb_lower"] = df["bb_mid"] - bollinger_std*df["close"].rolling(bollinger_period).std()
@@ -124,13 +122,13 @@ def ml_confidence(entry_df, confirm_4h, confirm_1d):
     momentum = min(max((entry_df["rsi"].iloc[-1]-50)/50,-1),1)
     volatility = entry_df["close"].pct_change().std()
     volatility_score = 1 - min(volatility*10,1)
-    macd_signal = 1 if entry_df["macd"].iloc[-1] > entry_df["macd_signal"].iloc[-1] else 0
-    bb_signal = 1 if entry_df["close"].iloc[-1] > entry_df["bb_mid"].iloc[-1] else 0
+    macd_signal_val = 1 if entry_df["macd"].iloc[-1] > entry_df["macd_signal"].iloc[-1] else 0
+    bb_signal_val = 1 if entry_df["close"].iloc[-1] > entry_df["bb_mid"].iloc[-1] else 0
     raw = (weights["trend_alignment"]*trend_alignment +
            weights["momentum"]*abs(momentum) +
            weights["volatility"]*volatility_score +
-           weights["macd"]*macd_signal +
-           weights["bollinger"]*bb_signal)
+           weights["macd"]*macd_signal_val +
+           weights["bollinger"]*bb_signal_val)
     return round(1 / (1 + np.exp(-5*(raw-0.5))),4)
 
 # ============================
@@ -182,29 +180,43 @@ def generate_signals(symbols):
 # BACKTEST ENGINE
 # ============================
 def backtest(symbol):
-    equity=10000
-    equity_curve=[]
-    wins=0
-    trades=0
-    ex=EXCHANGES["Bitget"] # use Bitget for backtesting as example
-    df=compute_structure(fetch_ohlcv(ex,symbol,"1h"))
-    for i in range(50,len(df)):
-        sub=df.iloc[:i]
-        bias=trend_bias(sub)
-        if bias==0: continue
-        entry=sub["close"].iloc[-1]
-        atr=sub["atr"].iloc[-1]
-        tp=entry+atr*atr_multiplier if bias==1 else entry-atr*atr_multiplier
-        sl=entry-atr if bias==1 else entry+atr
-        trades+=1
-        # Simple backtest: assume hit TP or SL immediately next bar
-        next_close=sub["close"].iloc[-1]
-        profit=tp-entry if bias==1 else entry-tp
-        equity+=profit
-        equity_curve.append(equity)
-        if profit>0: wins+=1
-    win_rate=wins/trades if trades>0 else np.nan
-    return equity_curve, win_rate, trades
+    equity_dict={}
+    metrics=[]
+    for ex_name, ex in EXCHANGES.items():
+        equity=10000
+        equity_curve=[]
+        peak=equity
+        max_drawdown=0
+        gross_profit=0
+        gross_loss=0
+        trades=0
+        wins=0
+        df=compute_structure(fetch_ohlcv(ex,symbol,"1h"))
+        for i in range(50,len(df)):
+            sub=df.iloc[:i]
+            bias=trend_bias(sub)
+            if bias==0: continue
+            entry=sub["close"].iloc[-1]
+            atr=sub["atr"].iloc[-1]
+            tp=entry+atr*atr_multiplier if bias==1 else entry-atr*atr_multiplier
+            sl=entry-atr if bias==1 else entry+atr
+            trades+=1
+            profit=tp-entry if bias==1 else entry-tp
+            equity+=profit
+            equity_curve.append(equity)
+            if equity>peak: peak=equity
+            drawdown=(peak-equity)/peak
+            if drawdown>max_drawdown: max_drawdown=drawdown
+            if profit>0: 
+                wins+=1
+                gross_profit+=profit
+            else:
+                gross_loss+=abs(profit)
+        win_rate=wins/trades if trades>0 else np.nan
+        profit_factor=gross_profit/gross_loss if gross_loss>0 else np.nan
+        metrics.append({"Exchange":ex_name,"Trades":trades,"Win Rate":win_rate,"Max Drawdown":max_drawdown,"Profit Factor":profit_factor})
+        equity_dict[ex_name]=equity_curve
+    return equity_dict, metrics
 
 # ============================
 # STREAMLIT UI
@@ -228,10 +240,14 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("Backtesting")
     for symbol in selected_symbols:
-        equity_curve, win_rate, trades=backtest(symbol)
-        st.write(f"Symbol: {symbol} | Trades: {trades} | Win Rate: {win_rate:.2%}")
-        if equity_curve:
-            st.line_chart(equity_curve)
+        equity_dict, metrics=backtest(symbol)
+        st.write(f"Symbol: {symbol}")
+        metric_df=pd.DataFrame(metrics)
+        st.dataframe(metric_df, use_container_width=True)
+        # Equity curves per exchange
+        for ex_name, eq_curve in equity_dict.items():
+            st.line_chart(eq_curve, height=250, use_container_width=True, 
+                          width=None, key=f"{symbol}_{ex_name}_eq")
 
 with tabs[2]:
     st.subheader("Audit Logs")
