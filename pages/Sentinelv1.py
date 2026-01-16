@@ -164,12 +164,12 @@ def generate_signals(symbols):
                     "Time (UTC)":datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
                 }
                 signals.append(signal)
-                # Audit logging
+                # Audit logging (fixed: 9 columns, 9 values)
                 cursor.execute("""
-                INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?)
                 """,(signal["Time (UTC)"],signal["Exchange"],signal["Pair"],signal["Direction"],
                     signal["Entry"],signal["Take Profit"],signal["Stop Loss"],signal["ML Confidence"],
-                    signal["Session"],signal["Time (UTC)"]))
+                    signal["Session"]))
                 conn.commit()
             except Exception as e:
                 st.warning(f"{ex_name} {symbol}: {str(e)}")
@@ -243,14 +243,13 @@ with tabs[1]:
         st.write(f"Symbol: {symbol}")
         metric_df=pd.DataFrame(metrics)
         st.dataframe(metric_df, use_container_width=True)
-        # Equity curves per exchange
+        # Equity curves per exchange (removed invalid `key` parameter)
         for ex_name, eq_curve in equity_dict.items():
-            if eq_curve and any([x is not None for x in eq_curve]):
-                # ✅ SAFE plotting using numpy array
-                eq_array = np.array([float(x) for x in eq_curve])
-                eq_series = pd.Series(eq_array).fillna(method="ffill")
-                eq_series.index = range(1,len(eq_series)+1)
-                st.line_chart(eq_series, height=250, use_container_width=True, key=f"{symbol}_{ex_name}_eq_unique")
+            if eq_curve and any(pd.notnull(eq_curve)):
+                eq_df=pd.DataFrame({
+                    "Equity": pd.to_numeric(eq_curve, errors='coerce')
+                }, index=pd.RangeIndex(start=1, stop=len(eq_curve)+1))
+                st.line_chart(eq_df, height=250, use_container_width=True)
             else:
                 st.info(f"No backtest data for {symbol} on {ex_name}")
 
