@@ -65,7 +65,6 @@ macd_signal = st.sidebar.slider("MACD Signal EMA",5,30,9)
 
 TIMEFRAMES = {"entry":"1h","confirm_4h":"4h","confirm_1d":"1d"}
 MAX_BARS = 200
-REFRESH_SECONDS = 60
 
 # ============================
 # HARDEN CCXT
@@ -246,8 +245,11 @@ with tabs[1]:
         st.dataframe(metric_df, use_container_width=True)
         # Equity curves per exchange
         for ex_name, eq_curve in equity_dict.items():
-            st.line_chart(eq_curve, height=250, use_container_width=True, 
-                          width=None, key=f"{symbol}_{ex_name}_eq")
+            if eq_curve:
+                st.line_chart(pd.Series(eq_curve), height=250,
+                              use_container_width=True, key=f"{symbol}_{ex_name}_eq")
+            else:
+                st.info(f"No backtest data for {symbol} on {ex_name}")
 
 with tabs[2]:
     st.subheader("Audit Logs")
