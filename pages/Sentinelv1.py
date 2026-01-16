@@ -246,7 +246,9 @@ with tabs[1]:
         # Equity curves per exchange
         for ex_name, eq_curve in equity_dict.items():
             if eq_curve and any(pd.notnull(eq_curve)):
-                eq_df=pd.DataFrame({"Equity": pd.to_numeric(eq_curve, errors='coerce')})
+                eq_df=pd.DataFrame({
+                    "Equity": pd.to_numeric(eq_curve, errors='coerce')
+                }, index=pd.RangeIndex(start=1, stop=len(eq_curve)+1))
                 st.line_chart(eq_df, height=250, use_container_width=True, key=f"{symbol}_{ex_name}_eq")
             else:
                 st.info(f"No backtest data for {symbol} on {ex_name}")
