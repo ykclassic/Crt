@@ -16,3 +16,4 @@ fpdf
 reportlab
 streamlit-autorefresh
 shap
+lifelines
