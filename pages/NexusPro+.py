@@ -10,12 +10,13 @@ import threading
 import time
 from datetime import datetime
 from lifelines import KaplanMeierFitter
+import shap
 
 # -----------------------------
 # Page config
 # -----------------------------
 st.set_page_config(page_title="Nexus Neural v3+", page_icon="🌐", layout="wide")
-st.title("🌐 Nexus Neural v3+ — Real-Time Ensemble Signal Engine")
+st.title("🌐 Nexus Neural v3+ — Deterministic + ML Ensemble Signal Engine")
 
 # -----------------------------
 # Database setup
@@ -54,11 +55,11 @@ def log_signal(record):
     DB.commit()
 
 # -----------------------------
-# Exchange selection
+# Sidebar inputs
 # -----------------------------
-exchange_name = st.sidebar.selectbox("Select Exchange", ["XT", "Gate.io"])
+exchange_name = st.sidebar.selectbox("Select Exchange for Signal Base", ["XT", "Gate.io"])
 TIMEFRAMES = ["1h","4h","1d"]
-TIMEFRAME = st.sidebar.selectbox("Select Timeframe", TIMEFRAMES)
+TIMEFRAME = st.sidebar.selectbox("Select Primary Timeframe", TIMEFRAMES)
 ALL_ASSETS = ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","ADA/USDT",
               "LINK/USDT","DOGE/USDT","TRX/USDT","SUI/USDT","PEPE/USDT"]
 selected_assets = st.sidebar.multiselect("Select Assets", ALL_ASSETS, default=ALL_ASSETS[:5])
@@ -68,7 +69,7 @@ selected_assets = st.sidebar.multiselect("Select Assets", ALL_ASSETS, default=AL
 # -----------------------------
 @st.cache_resource
 def get_exchange(name):
-    if name=="XT":
+    if name == "XT":
         ex = ccxt.xt({"enableRateLimit": True})
     else:
         ex = ccxt.gateio({"enableRateLimit": True})
@@ -104,51 +105,82 @@ def deterministic_signal(df):
     return signal, regime, entry, stop, take
 
 def ml_confidence(df):
+    # Placeholder: replace with real ML model
     return np.random.uniform(75,99)
 
 # -----------------------------
-# OHLCV fetch with retries + fallback mock data
+# Multi-TF consensus
 # -----------------------------
-def fetch_ohlcv(symbol, tf, limit=200):
-    for i in range(3):
-        try:
-            data = exchange.fetch_ohlcv(symbol, tf, limit=limit)
-            if data:
-                df = pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume"])
-                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-                return df
-        except Exception as e:
-            print(f"Fetch attempt {i+1} failed for {symbol}: {e}")
-            time.sleep(1)
-    # fallback mock
-    now = pd.Timestamp.utcnow()
-    df = pd.DataFrame({
-        "timestamp": [now - pd.Timedelta(minutes=i*60) for i in range(limit)],
-        "open": np.random.uniform(10, 20, limit),
-        "high": np.random.uniform(20, 25, limit),
-        "low": np.random.uniform(5, 10, limit),
-        "close": np.random.uniform(10, 20, limit),
-        "volume": np.random.uniform(100, 1000, limit)
-    })
-    return df
+def multi_tf_consensus(symbol, tfs):
+    signals, regimes = [], []
+    for tf in tfs:
+        df = fetch_ohlcv(symbol, tf)
+        if df is None: continue
+        df = compute_indicators(df)
+        sig, reg, _, _, _ = deterministic_signal(df)
+        signals.append(sig)
+        regimes.append(reg)
+    if signals:
+        consensus_signal = max(set(signals), key=signals.count)
+        consensus_regime = max(set(regimes), key=regimes.count)
+        return consensus_signal, consensus_regime
+    return "NEUTRAL","SIDEWAYS"
 
 # -----------------------------
-# Generate signal record
+# Funding rate for Gate.io
 # -----------------------------
-def generate_signal(symbol, tf):
-    df = fetch_ohlcv(symbol, tf)
+def fetch_funding_rate(symbol):
+    if exchange_name.lower() != "gate.io":
+        return 0
+    try:
+        # Mock: Replace with real funding API call
+        return np.random.uniform(-0.05,0.05)
+    except:
+        return 0
+
+def adjust_signal_with_funding(signal, funding_rate):
+    if funding_rate > 0.02 and signal=="LONG":
+        return "LONG+"
+    elif funding_rate < -0.02 and signal=="SHORT":
+        return "SHORT+"
+    return signal
+
+# -----------------------------
+# OHLCV fetch
+# -----------------------------
+def fetch_ohlcv(symbol, tf, limit=200):
+    try:
+        data = exchange.fetch_ohlcv(symbol, tf, limit=limit)
+        df = pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        return df
+    except:
+        return None
+
+# -----------------------------
+# Full signal generator
+# -----------------------------
+def generate_full_signal(symbol, tfs):
+    signal, regime = multi_tf_consensus(symbol, tfs)
+    df = fetch_ohlcv(symbol, tfs[0])
+    if df is None: return None
     df = compute_indicators(df)
-    signal, regime, entry, stop, take = deterministic_signal(df)
     confidence = ml_confidence(df)
+    funding_rate = fetch_funding_rate(symbol)
+    signal_adj = adjust_signal_with_funding(signal, funding_rate)
+    last = df.iloc[-1]
+    entry = last["close"]
+    stop = entry*0.98 if signal_adj.startswith("LONG") else entry*1.02 if signal_adj.startswith("SHORT") else entry
+    take = entry*1.03 if signal_adj.startswith("LONG") else entry*0.97 if signal_adj.startswith("SHORT") else entry
     ts = datetime.utcnow().isoformat()
     model_hash = hashlib.md5(b"NexusNeuralV3Plus").hexdigest()
     record = {
         "timestamp": ts,
         "exchange": exchange_name,
         "asset": symbol,
-        "timeframe": tf,
+        "timeframe": "/".join(tfs),
         "regime": regime,
-        "signal": signal,
+        "signal": signal_adj,
         "entry": entry,
         "stop": stop,
         "take": take,
@@ -157,53 +189,42 @@ def generate_signal(symbol, tf):
         "status": "OPEN"
     }
     log_signal(record)
-    return record, df
+    return record, df, funding_rate
 
 # -----------------------------
-# Real-time signals cache & loop
+# Real-time threaded loop
 # -----------------------------
 signals_cache = {}
-# Initial synchronous fetch
-for asset in selected_assets:
-    res = generate_signal(asset, TIMEFRAME)
-    if res:
-        record, df = res
-        signals_cache[asset] = (record, df)
-
 def update_signals_loop():
     while True:
         for asset in selected_assets:
             try:
-                res = generate_signal(asset, TIMEFRAME)
-                if res:
-                    record, df = res
-                    signals_cache[asset] = (record, df)
+                res = generate_full_signal(asset, TIMEFRAMES)
+                if res: signals_cache[asset] = res
             except Exception as e:
-                print(f"Error updating {asset}: {e}")
+                print(f"Error {asset}: {e}")
         time.sleep(60)
 
 threading.Thread(target=update_signals_loop, daemon=True).start()
 
 # -----------------------------
-# Dashboard
+# Dashboard display
 # -----------------------------
-st.subheader(f"Live Ensemble Signals — {exchange_name} | {TIMEFRAME}")
+st.subheader(f"Live Ensemble Signals — {exchange_name}")
 for asset in selected_assets:
     if asset not in signals_cache:
         st.warning(f"{asset} data unavailable yet")
         continue
-    record, df = signals_cache[asset]
-
-    # Chart
+    record, df, funding_rate = signals_cache[asset]
+    
     st.markdown(f"### {asset}")
     fig = px.line(df, x="timestamp", y=["close","ema20","ema50"], title=f"{asset} Price + EMA")
     st.plotly_chart(fig, use_container_width=True)
-
-    # Color code signals
-    color = "green" if record["signal"]=="LONG" else "red" if record["signal"]=="SHORT" else "yellow"
+    
+    color = "green" if record["signal"].startswith("LONG") else "red" if record["signal"].startswith("SHORT") else "yellow"
     st.markdown(f"<p style='color:{color}; font-weight:bold'>Signal: {record['signal']} ({record['regime']})</p>", unsafe_allow_html=True)
     st.markdown(f"Entry / SL / TP: {record['entry']:.2f} / {record['stop']:.2f} / {record['take']:.2f}")
-    st.markdown(f"Confidence: {record['confidence']:.2f}%")
+    st.markdown(f"Confidence: {record['confidence']:.2f}% | Funding Rate: {funding_rate:.2%}")
 
 # -----------------------------
 # Signal Lifecycle Table
@@ -213,21 +234,18 @@ df_audit = pd.read_sql_query("SELECT * FROM signals ORDER BY timestamp DESC", DB
 st.dataframe(df_audit, use_container_width=True)
 
 # -----------------------------
-# Signal Survival Analysis
+# Survival Analysis
 # -----------------------------
 st.subheader("Signal Survival Analysis by Regime")
 if not df_audit.empty:
     kmf = KaplanMeierFitter()
     for regime in df_audit["regime"].unique():
         subset = df_audit[df_audit["regime"]==regime]
-        durations = (pd.Timestamp.utcnow() - pd.to_datetime(subset["timestamp"])).dt.total_seconds()/60
+        durations = (pd.Timestamp.utcnow() - pd.to_datetime(subset["timestamp"], errors='coerce')).dt.total_seconds()/60
         events = subset["status"].apply(lambda x: 1 if x!="OPEN" else 0)
         if len(durations)>0:
             kmf.fit(durations, events, label=regime)
-            st.line_chart(pd.DataFrame({
-                "time": kmf.survival_function_.index,
-                f"{regime}": kmf.survival_function_[regime]
-            }).set_index("time"))
+            st.line_chart(pd.DataFrame({"time": kmf.survival_function_.index, f"{regime}": kmf.survival_function_[regime]}).set_index("time"))
 else:
     st.info("No historical signals yet.")
 
@@ -242,17 +260,17 @@ for asset in selected_assets:
         gate_ex = get_exchange("Gate.io")
         xt_df = compute_indicators(fetch_ohlcv(asset, TIMEFRAME))
         gate_df = compute_indicators(fetch_ohlcv(asset, TIMEFRAME))
-        xt_signal, _, _, _, _ = deterministic_signal(xt_df)
+        xt_signal, _ ,_, _, _ = deterministic_signal(xt_df)
         gate_signal, _, _, _, _ = deterministic_signal(gate_df)
         consensus = xt_signal if xt_signal==gate_signal else "DISAGREEMENT"
         disagreement_table.append({"Asset": asset, "XT": xt_signal, "Gate": gate_signal, "Consensus": consensus})
     except:
-        disagreement_table.append({"Asset": asset, "XT": "NA", "Gate": "NA", "Consensus": "NA"})
+        disagreement_table.append({"Asset": asset, "XT":"NA","Gate":"NA","Consensus":"NA"})
 
 df_disagreement = pd.DataFrame(disagreement_table)
 def color_signal(val):
-    if val=="LONG": return "color:green"
-    if val=="SHORT": return "color:red"
+    if val.startswith("LONG"): return "color:green"
+    if val.startswith("SHORT"): return "color:red"
     if val=="NEUTRAL": return "color:yellow"
     if val=="DISAGREEMENT": return "color:orange"
     return ""
