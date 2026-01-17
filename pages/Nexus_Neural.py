@@ -15,7 +15,7 @@ if __name__ == "__main__":
     pass 
 
 # 1. Dashboard Configuration
-st.set_page_config(page_title="Aegis Global | Multi-Asset Pulse", page_icon="🌐", layout="wide")
+st.set_page_config(page_title="Nexus Neural | Multi-Asset Pulse", page_icon="🌐", layout="wide")
 
 # 2. Security Gate
 if "authenticated" not in st.session_state:
@@ -91,7 +91,7 @@ def render_global_matrix():
         st.dataframe(display_df.style.applymap(color_regime, subset=['Regime']), use_container_width=True)
 
 # --- UI LAYOUT ---
-st.title("🌐 Aegis Global: Multi-Asset Intelligence Matrix")
+st.title("🌐 Nexus Neural: Multi-Asset Intelligence Matrix")
 st.write("Automated Signal Node: Aggregating 10 assets every 60 seconds.")
 
 # Execute the auto-refreshing fragment
@@ -107,5 +107,6 @@ with h2:
 with h3:
     st.write("📡 **Data Source**: Bitget/XT Multi-feed")
 
-st.caption("Aegis Global v4.2 | Fragment-based Auto-Refresh Active")
+st.caption("Nexus Neural | Fragment-based Auto-Refresh Active")
+
 
