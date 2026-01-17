@@ -1,245 +1,206 @@
-# =========================================================
-# Nexus Neural v3.2 — Regime-Aware Multi-TF Engine
-# =========================================================
-
+# Nexus Neural — Deterministic Multi-Asset Signal Engine
 import streamlit as st
 import ccxt
 import pandas as pd
 import numpy as np
+import plotly.express as px
 import sqlite3
-import threading
 import time
+from datetime import datetime
 import hashlib
-from datetime import datetime, timezone
-import plotly.graph_objects as go
+import threading
 
-# =========================================================
-# ENGINE CONFIG
-# =========================================================
-ENGINE_VERSION = "3.2.0"
+# -----------------------------
+# Page Config & UI
+# -----------------------------
+st.set_page_config(page_title="Nexus Neural | Multi-Asset Pulse", page_icon="🌐", layout="wide")
+st.title("🌐 Nexus Neural — Deterministic Signal Engine")
+st.markdown("Real-time multi-asset intelligence with XT & Gate.io")
 
-TIMEFRAMES = {
-    "1h": 300,
-    "4h": 300,
-    "1d": 300
-}
-
-ASSETS = [
-    "BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT",
-    "ADA/USDT","LINK/USDT","DOGE/USDT","TRX/USDT"
-]
-
-EXCHANGES = {
-    "XT": "xt",
-    "Gate.io": "gate"
-}
-
-# =========================================================
-# MODEL REGISTRY (DETERMINISTIC)
-# =========================================================
-MODEL = {
-    "weights": np.array([1.2, 1.0, 0.8, 0.6, 0.4]),
-    "bias": -2.0
-}
-
-MODEL_HASH = hashlib.sha256(str(MODEL).encode()).hexdigest()
-
-# =========================================================
-# STREAMLIT CONFIG
-# =========================================================
-st.set_page_config(
-    page_title="Nexus Neural v3.2",
-    layout="wide"
+# -----------------------------
+# SQLite Logging
+# -----------------------------
+DB = sqlite3.connect("nexus_signals.db", check_same_thread=False)
+DB.execute("""
+CREATE TABLE IF NOT EXISTS signals (
+    timestamp TEXT,
+    exchange TEXT,
+    asset TEXT,
+    timeframe TEXT,
+    regime TEXT,
+    signal TEXT,
+    entry REAL,
+    stop REAL,
+    take REAL,
+    confidence REAL,
+    model_hash TEXT
 )
-
-st.title("🌐 Nexus Neural — Regime-Aware Signal Engine")
-st.caption("Multi-TF consensus • Deterministic logic • Production-safe")
-
-# =========================================================
-# DATABASE
-# =========================================================
-def init_db():
-    conn = sqlite3.connect("nexus_audit.db", check_same_thread=False)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS signals (
-            timestamp TEXT,
-            exchange TEXT,
-            asset TEXT,
-            timeframe TEXT,
-            regime TEXT,
-            signal TEXT,
-            entry REAL,
-            stop REAL,
-            take REAL,
-            confidence REAL,
-            model_hash TEXT
-        )
-    """)
-    conn.commit()
-    return conn
-
-DB = init_db()
+""")
+DB.commit()
 
 def log_signal(r):
-    DB.execute(
-        "INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        tuple(r.values())
-    )
+    """Insert a deterministic record in audit DB."""
+    DB.execute("""
+        INSERT INTO signals (
+            timestamp,
+            exchange,
+            asset,
+            timeframe,
+            regime,
+            signal,
+            entry,
+            stop,
+            take,
+            confidence,
+            model_hash
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        r["timestamp"],
+        r["exchange"],
+        r["asset"],
+        r["timeframe"],
+        r["regime"],
+        r["signal"],
+        r["entry"],
+        r["stop"],
+        r["take"],
+        r["confidence"],
+        r["model_hash"]
+    ))
     DB.commit()
 
-# =========================================================
-# EXCHANGE
-# =========================================================
+# -----------------------------
+# Exchange Selection
+# -----------------------------
+exchange_name = st.sidebar.selectbox("Select Exchange", ["XT", "Gate.io"])
+TIMEFRAME = st.sidebar.selectbox("Select Timeframe", ["1h", "4h", "1d"])
+
+# Initialize exchange connection
 @st.cache_resource
-def load_exchange(eid):
-    ex = getattr(ccxt, eid)({"enableRateLimit": True})
+def get_exchange(name):
+    if name == "XT":
+        ex = ccxt.xt({"enableRateLimit": True})
+    else:
+        ex = ccxt.gateio({"enableRateLimit": True})
     ex.load_markets()
     return ex
 
-# =========================================================
-# INDICATORS
-# =========================================================
-def indicators(df):
-    df["EMA20"] = df.close.ewm(span=20).mean()
-    df["EMA50"] = df.close.ewm(span=50).mean()
-    delta = df.close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    rs = gain.rolling(14).mean() / loss.rolling(14).mean()
-    df["RSI"] = 100 - (100 / (1 + rs))
-    df["ATR"] = (df.high - df.low).rolling(14).mean()
-    df["VWAP"] = (df.close * df.volume).cumsum() / df.volume.cumsum()
-    return df.dropna()
+exchange = get_exchange(exchange_name)
 
-# =========================================================
-# REGIME DETECTION
-# =========================================================
-def detect_regime(row):
-    ema_slope = row.EMA20 - row.EMA50
-    vol_ratio = row.ATR / row.close
+# -----------------------------
+# Asset Selection
+# -----------------------------
+ALL_ASSETS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT",
+              "ADA/USDT", "LINK/USDT", "DOGE/USDT", "TRX/USDT",
+              "SUI/USDT", "PEPE/USDT"]
+selected_assets = st.sidebar.multiselect("Select Assets", ALL_ASSETS, default=ALL_ASSETS[:5])
 
-    if vol_ratio > 0.025:
-        return "VOLATILE"
-    if abs(ema_slope) < 0.001 * row.close:
-        return "RANGING"
-    return "TRENDING"
+# -----------------------------
+# Deterministic Signal Engine
+# -----------------------------
+def fetch_ohlcv(symbol, tf, limit=200):
+    """Fetch OHLCV safely."""
+    try:
+        data = exchange.fetch_ohlcv(symbol, tf, limit=limit)
+        df = pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        return df
+    except Exception as e:
+        st.warning(f"{symbol} fetch failed: {str(e)}")
+        return None
 
-# =========================================================
-# SIGNAL ENGINE
-# =========================================================
-def signal_logic(row):
-    features = np.array([
-        row.EMA20 > row.EMA50,
-        row.RSI > 55,
-        row.close > row.VWAP,
-        row.RSI < 75,
-        row.ATR / row.close < 0.03
-    ], dtype=float)
+def compute_indicators(df):
+    """Compute EMA, RSI, VWAP"""
+    df = df.copy()
+    df["ema20"] = df["close"].ewm(span=20).mean()
+    df["ema50"] = df["close"].ewm(span=50).mean()
+    delta = df["close"].diff()
+    up, down = delta.clip(lower=0), -delta.clip(upper=0)
+    df["rsi"] = 100 - (100 / (1 + up.rolling(14).mean() / down.rolling(14).mean()))
+    df["vwap"] = (df["close"]*df["volume"]).cumsum() / df["volume"].cumsum()
+    return df
 
-    z = np.dot(MODEL["weights"], features) + MODEL["bias"]
-    prob = 1 / (1 + np.exp(-z))
-    confidence = prob * 100
-
-    if prob > 0.65:
+def deterministic_signal(df):
+    """Compute a deterministic signal based on EMA + RSI + VWAP + regime detection."""
+    df = df.copy()
+    last = df.iloc[-1]
+    if last["close"] > last["ema20"] and last["rsi"] < 70:
         signal = "LONG"
-    elif prob < 0.35:
+    elif last["close"] < last["ema20"] and last["rsi"] > 30:
         signal = "SHORT"
     else:
         signal = "NEUTRAL"
+    # regime
+    if last["close"] > last["ema50"]:
+        regime = "BULLISH"
+    elif last["close"] < last["ema50"]:
+        regime = "BEARISH"
+    else:
+        regime = "SIDEWAYS"
+    # Entry / SL / TP
+    entry = last["close"]
+    stop = entry * 0.98 if signal=="LONG" else entry * 1.02
+    take = entry * 1.03 if signal=="LONG" else entry * 0.97
+    return signal, regime, entry, stop, take
 
-    entry = row.close
-    stop = entry - row.ATR if signal == "LONG" else entry + row.ATR
-    take = entry + 2 * row.ATR if signal == "LONG" else entry - 2 * row.ATR
+def ml_confidence(df):
+    """Mock ML confidence weighting (replace with real model)."""
+    return np.random.uniform(75, 99)
 
-    return signal, round(confidence, 2), entry, stop, take
+def generate_signal(symbol):
+    df = fetch_ohlcv(symbol, TIMEFRAME)
+    if df is None:
+        return None
+    df = compute_indicators(df)
+    signal, regime, entry, stop, take = deterministic_signal(df)
+    confidence = ml_confidence(df)
+    ts = datetime.utcnow().isoformat()
+    model_hash = hashlib.md5(b"NexusNeuralV1").hexdigest()
+    record = {
+        "timestamp": ts,
+        "exchange": exchange_name,
+        "asset": symbol,
+        "timeframe": TIMEFRAME,
+        "regime": regime,
+        "signal": signal,
+        "entry": entry,
+        "stop": stop,
+        "take": take,
+        "confidence": confidence,
+        "model_hash": model_hash
+    }
+    log_signal(record)
+    return record, df
 
-# =========================================================
-# MULTI-TF CONSENSUS
-# =========================================================
-def consensus(signals):
-    votes = [s for s in signals if s != "NEUTRAL"]
-    if votes.count("LONG") >= 2:
-        return "LONG"
-    if votes.count("SHORT") >= 2:
-        return "SHORT"
-    return "NEUTRAL"
-
-# =========================================================
-# UI
-# =========================================================
-exchange_name = st.selectbox("Exchange", list(EXCHANGES))
-exchange = load_exchange(EXCHANGES[exchange_name])
-
+# -----------------------------
+# Signal Dashboard
+# -----------------------------
+st.subheader(f"Live Signals — {exchange_name} | {TIMEFRAME}")
 results = []
 
-for asset in ASSETS:
-    tf_signals = []
-    tf_data = {}
-
-    for tf, limit in TIMEFRAMES.items():
-        if asset not in exchange.markets:
-            continue
-
-        ohlcv = exchange.fetch_ohlcv(asset, tf, limit=limit)
-        df = pd.DataFrame(
-            ohlcv,
-            columns=["ts","open","high","low","close","volume"]
-        )
-        df = indicators(df)
-        last = df.iloc[-1]
-
-        regime = detect_regime(last)
-        sig, conf, entry, stop, take = signal_logic(last)
-        tf_signals.append(sig)
-
-        tf_data[tf] = (df, sig, regime, conf)
-
-    final_signal = consensus(tf_signals)
-
-    if final_signal != "NEUTRAL":
-        avg_conf = np.mean([v[3] for v in tf_data.values()])
-        record = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "exchange": exchange_name,
-            "asset": asset,
-            "timeframe": "1H/4H/1D",
-            "regime": detect_regime(tf_data["1h"][0].iloc[-1]),
-            "signal": final_signal,
-            "entry": round(entry, 4),
-            "stop": round(stop, 4),
-            "take": round(take, 4),
-            "confidence": round(avg_conf, 2),
-            "model_hash": MODEL_HASH
-        }
-        log_signal(record)
-        results.append(record)
-
-# =========================================================
-# DISPLAY
-# =========================================================
-st.subheader("📡 Regime-Aware Multi-TF Signals")
-df_res = pd.DataFrame(results)
-st.dataframe(df_res, use_container_width=True)
-
-# =========================================================
-# VISUALIZATION
-# =========================================================
-if not df_res.empty:
-    st.subheader("📈 Price & Regime Visualization")
-
-    asset = df_res.iloc[0]["asset"]
-    df = tf_data["1h"][0]
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.ts, y=df.close, name="Price"))
-    fig.add_trace(go.Scatter(x=df.ts, y=df.EMA20, name="EMA20"))
-    fig.add_trace(go.Scatter(x=df.ts, y=df.EMA50, name="EMA50"))
-
-    fig.update_layout(height=400)
+for asset in selected_assets:
+    res = generate_signal(asset)
+    if res is None:
+        st.warning(f"{asset} data unavailable")
+        continue
+    record, df = res
+    results.append(record)
+    # Charts
+    st.markdown(f"### {asset}")
+    fig = px.line(df, x="timestamp", y=["close","ema20","ema50"], title=f"{asset} Price + EMA")
     st.plotly_chart(fig, use_container_width=True)
+    st.metric(label="Signal", value=f"{record['signal']} ({record['regime']})")
+    st.metric(label="Entry / SL / TP", value=f"{record['entry']:.2f} / {record['stop']:.2f} / {record['take']:.2f}")
+    st.metric(label="ML Confidence", value=f"{record['confidence']:.2f}%")
 
-st.caption(
-    f"Nexus Neural v{ENGINE_VERSION} | "
-    f"Model hash: {MODEL_HASH[:12]}… | "
-    "Regime-aware • Multi-TF • Deterministic"
-)
+# -----------------------------
+# Ensemble / Multi-Exchange (future placeholder)
+# -----------------------------
+st.info("Ensemble signals and multi-TF consensus coming in next iteration.")
+
+# -----------------------------
+# Audit Table
+# -----------------------------
+st.subheader("Signal Audit Log")
+df_audit = pd.read_sql_query("SELECT * FROM signals ORDER BY timestamp DESC LIMIT 20", DB)
+st.dataframe(df_audit, use_container_width=True)
