@@ -15,4 +15,6 @@ psutil
 fpdf
 reportlab
 streamlit-autorefresh
+shap
+
 
