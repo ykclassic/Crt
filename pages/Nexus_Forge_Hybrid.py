@@ -267,20 +267,20 @@ def deterministic_signal(df, mode="Trend"):
     last = df.iloc[-1]
 
     if mode == "Trend":
-        super_up = last["close"] > last["supertrend"] if "supertrend" in last else False
+        super_up = last.get("supertrend", 0) and last["close"] > last["supertrend"]
 
-        volume_ok = last["volume"] > last["volume_ma"] * 1.2 if "volume_ma" in last else True
+        volume_ok = last.get("volume_ma", 0) and last["volume"] > last["volume_ma"] * 1.2
 
         signal = "NEUTRAL"
-        if last["close"] > last["ema20"] and last["rsi"] < 70 and super_up and volume_ok:
+        if last.get("ema20", 0) and last["close"] > last["ema20"] and last["rsi"] < 70 and super_up and volume_ok:
             signal = "LONG"
-        elif last["close"] < last["ema20"] and last["rsi"] > 30 and not super_up and volume_ok:
+        elif last.get("ema20", 0) and last["close"] < last["ema20"] and last["rsi"] > 30 and not super_up and volume_ok:
             signal = "SHORT"
 
-        regime = "BULLISH" if last["close"] > last["ema50"] else "BEARISH" if last["close"] < last["ema50"] else "SIDEWAYS"
+        regime = "BULLISH" if last.get("ema50", 0) and last["close"] > last["ema50"] else "BEARISH" if last.get("ema50", 0) and last["close"] < last["ema50"] else "SIDEWAYS"
 
         entry = last["close"]
-        atr = last["atr"] if "atr" in last and not np.isnan(last["atr"]) else entry * 0.01
+        atr = last.get("atr") if not np.isnan(last.get("atr", np.nan)) else entry * 0.01
 
         if signal == "LONG":
             stop = entry - atr_multiplier_stop * atr
@@ -293,27 +293,27 @@ def deterministic_signal(df, mode="Trend"):
 
         features = json.dumps([
             float(last["rsi"]),
-            float((last["close"] - last["ema20"]) / last["ema20"] if last["ema20"] != 0 else 0),
-            float((last["close"] - last["ema50"]) / last["ema50"] if last["ema50"] != 0 else 0),
+            float((last["close"] - last.get("ema20", 0)) / last.get("ema20", 1) if last.get("ema20", 1) != 0 else 0),
+            float((last["close"] - last.get("ema50", 0)) / last.get("ema50", 1) if last.get("ema50", 1) != 0 else 0),
             float(atr / entry),
-            float((last["close"] - last["supertrend"]) / entry if "supertrend" in last else 0),
-            float(last["volume"] / last["volume_ma"] if "volume_ma" in last and last["volume_ma"] != 0 else 0)
+            float((last["close"] - last.get("supertrend", 0)) / entry),
+            float(last["volume"] / last.get("volume_ma", 1) if last.get("volume_ma", 1) != 0 else 0)
         ])
 
     else:  # Range
-        ranging = last["adx"] < 25 if "adx" in last else False
+        ranging = last.get("adx", 100) < 25
 
         signal = "NEUTRAL"
         if ranging:
-            if last["rsi"] < 30 and last["close"] < last["bb_lower"] * 1.01 if "bb_lower" in last else False:
+            if last["rsi"] < 30 and last["close"] < last.get("bb_lower", 0) * 1.01:
                 signal = "LONG"
-            elif last["rsi"] > 70 and last["close"] > last["bb_upper"] * 0.99 if "bb_upper" in last else False:
+            elif last["rsi"] > 70 and last["close"] > last.get("bb_upper", 0) * 0.99:
                 signal = "SHORT"
 
         regime = "RANGING" if ranging else "TRENDING"
 
         entry = last["close"]
-        atr = last["atr"] if "atr" in last and not np.isnan(last["atr"]) else entry * 0.01
+        atr = last.get("atr") if not np.isnan(last.get("atr", np.nan)) else entry * 0.01
 
         if signal == "LONG":
             stop = entry - atr_multiplier_stop * atr
@@ -326,8 +326,8 @@ def deterministic_signal(df, mode="Trend"):
 
         features = json.dumps([
             float(last["rsi"]),
-            float((last["close"] - last["bb_mid"]) / last["bb_std"] if "bb_mid" in last and "bb_std" in last else 0),
-            float(last["adx"] if "adx" in last else 0),
+            float((last["close"] - last.get("bb_mid", 0)) / last.get("bb_std", 1)),
+            float(last.get("adx", 0)),
             float(atr / entry)
         ])
 
@@ -414,7 +414,7 @@ if mode == "Live":
         for tf in selected_timeframes:
             try:
                 df = fetch_ohlcv(asset, tf)
-                if df.empty:
+                if df.empty or len(df) < 50:  # Min for indicators
                     continue
                 df = compute_indicators(df, mode=strategy_mode)
                 record, df, _, _ = generate_and_log_signal(asset, tf, df)
@@ -579,18 +579,18 @@ if mode == "Live":
                 tf_df = df_all[df_all["tf"] == tf]
                 if not tf_df.empty:
                     if strategy_mode == "Trend":
-                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df["ema20"], mode="lines",
+                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df.get("ema20", pd.Series()), mode="lines",
                                         name=f"EMA20 {tf}", line=dict(color=color, dash="dash"))
-                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df["ema50"], mode="lines",
+                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df.get("ema50", pd.Series()), mode="lines",
                                         name=f"EMA50 {tf}", line=dict(color=color, dash="dot"))
-                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df["supertrend"], mode="lines",
+                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df.get("supertrend", pd.Series()), mode="lines",
                                         name=f"Supertrend {tf}", line=dict(color=color, width=3))
                     else:
-                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df["bb_upper"], mode="lines",
+                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df.get("bb_upper", pd.Series()), mode="lines",
                                         name=f"BB Upper {tf}", line=dict(color=color, dash="dash"))
-                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df["bb_mid"], mode="lines",
+                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df.get("bb_mid", pd.Series()), mode="lines",
                                         name=f"BB Mid {tf}", line=dict(color=color, dash="dot"))
-                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df["bb_lower"], mode="lines",
+                        fig.add_scatter(x=tf_df["timestamp"], y=tf_df.get("bb_lower", pd.Series()), mode="lines",
                                         name=f"BB Lower {tf}", line=dict(color=color, dash="dash"))
 
             min_ts = df_all["timestamp"].min()
@@ -865,118 +865,4 @@ if mode == "Live":
                 xt_sig, *_ = deterministic_signal(xt_df, mode=strategy_mode)
                 gate_sig, *_ = deterministic_signal(gate_df, mode=strategy_mode)
 
-                consensus = "CONSENSUS" if xt_sig == gate_sig else "DISAGREEMENT"
-
-                xt_price = xt_ex.fetch_ticker(asset)['last']
-                gate_price = gate_ex.fetch_ticker(asset)['last']
-                arb_spread = abs(xt_price - gate_price) / min(xt_price, gate_price) * 100 if xt_price and gate_price else 0
-                arb_msg = f"Spread {arb_spread:.2f}% | XT {xt_price:.2f} vs Gate {gate_price:.2f}" if arb_spread > 0.5 else ""
-
-                rows.append({
-                    "Timeframe": tf,
-                    "Asset": asset,
-                    "XT": xt_sig,
-                    "Gate.io": gate_sig,
-                    "Consensus": consensus,
-                    "Arb Alert": arb_msg
-                })
-            except:
-                rows.append({
-                    "Timeframe": tf,
-                    "Asset": asset,
-                    "XT": "NA",
-                    "Gate.io": "NA",
-                    "Consensus": "NA",
-                    "Arb Alert": "NA"
-                })
-
-    df_dis = pd.DataFrame(rows).sort_values(["Timeframe", "Asset"])
-
-    def highlight_sig(val):
-        if val == "LONG": return "color:green"
-        if val == "SHORT": return "color:red"
-        if val == "NEUTRAL": return "color:orange"
-        return ""
-
-    def highlight_cons(val):
-        if val == "DISAGREEMENT": return "background-color:#ffcccb"
-        if val == "CONSENSUS": return "background-color:#90ee90"
-        return ""
-
-    styled = (
-        df_dis.style
-        .applymap(highlight_sig, subset=["XT", "Gate.io"])
-        .applymap(highlight_cons, subset=["Consensus"])
-    )
-
-    st.dataframe(styled, use_container_width=True)
-
-# ---------------------------------------------------------
-# Backtest Mode
-# ---------------------------------------------------------
-if mode == "Backtest":
-    st.header(f"Backtest Results: {start_date} to {end_date}")
-
-    start_ts = int(datetime.combine(start_date, datetime.min.time()).timestamp() * 1000)
-    end_ts = int(datetime.combine(end_date, datetime.max.time()).timestamp() * 1000)
-
-    backtest_trades = []
-    equity_curve = []
-    current_capital = initial_capital
-
-    progress_bar = st.progress(0)
-    total_tasks = len(selected_assets) * len(selected_timeframes)
-    task_count = 0
-
-    for asset in selected_assets:
-        tf_data = {}
-        for tf in TIMEFRAMES:  # fetch all for HTF
-            df_hist = pd.DataFrame()
-            since = start_ts
-            while since < end_ts:
-                chunk = fetch_ohlcv(asset, tf, since=since, limit=1000)
-                if chunk.empty:
-                    break
-                df_hist = pd.concat([df_hist, chunk])
-                since = int(chunk["timestamp"].iloc[-1].timestamp() * 1000) + 1
-            if not df_hist.empty:
-                df_hist = df_hist.drop_duplicates(subset=["timestamp"]).sort_values("timestamp")
-                df_hist = compute_indicators(df_hist, mode=strategy_mode)
-                tf_data[tf] = df_hist.dropna()
-
-        for tf in selected_timeframes:
-            if tf not in tf_data or tf_data[tf].empty:
-                continue
-
-            df_hist = tf_data[tf]
-
-            open_signal = None
-            for i in range(50, len(df_hist)):
-                current_candle = df_hist.iloc[i:i+1]
-                current_price = current_candle["close"].iloc[0]
-                current_time = current_candle["timestamp"].iloc[0]
-
-                # HTF regime
-                higher_tf = {"1h": "4h", "4h": "1d"}.get(tf)
-                higher_regime = "SIDEWAYS"
-                if higher_tf and higher_tf in tf_data:
-                    higher_df = tf_data[higher_tf]
-                    higher_row = higher_df[higher_df["timestamp"] <= current_time].iloc[-1]
-                    higher_regime = "BULLISH" if higher_row["close"] > higher_row["ema50"] if "ema50" in higher_row else "SIDEWAYS" else "BEARISH" if higher_row["close"] < higher_row["ema50"] if "ema50" in higher_row else "SIDEWAYS" else "SIDEWAYS"
-
-                signal, regime, entry, stop, take, confidence, _ = deterministic_signal(current_candle, mode=strategy_mode)
-
-                confirmed = True
-                if require_confirmation and higher_tf:
-                    if signal == "LONG" and higher_regime != "BULLISH":
-                        confirmed = False
-                    elif signal == "SHORT" and higher_regime != "BEARISH":
-                        confirmed = False
-
-                if open_signal:
-                    # Trailing stop
-                    profit_1r = (current_price - open_signal["entry"]) > (open_signal["entry"] - open_signal["stop"]) if open_signal["signal"] == "LONG" else (open_signal["entry"] - current_price) > (open_signal["stop"] - open_signal["entry"])
-                    if profit_1r:
-                        new_stop = current_price * (1 - trailing_stop_pct / 100) if open_signal["signal"] == "LONG" else current_price * (1 + trailing_stop_pct / 100)
-                        if (open_signal["signal"] == "LONG" and new_stop > open_signal["stop"]) or (open_signal["signal"] == "SHORT" and new_stop < open_signal["stop"]):
-                            open_signal["stop"] = new
+                consensus = "CONS
