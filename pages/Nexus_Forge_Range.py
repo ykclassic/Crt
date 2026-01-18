@@ -46,7 +46,7 @@ st.title("📊 Nexus RangeMaster v1 — Ultimate Ranging Market Trading Engine")
 # ---------------------------------------------------------
 # Database
 # ---------------------------------------------------------
-DB = sqlite3.connect("rangemaster_signals.db", check_same_thread=False)  # Separate DB for ranging app
+DB = sqlite3.connect("rangemaster_signals.db", check_same_thread=False)
 
 DB.execute("""
 CREATE TABLE IF NOT EXISTS signals (
@@ -183,7 +183,7 @@ def compute_indicators(df):
     dx = 100 * np.abs(df["+di"] - df["-di"]) / (df["+di"] + df["-di"])
     df["adx"] = dx.rolling(14).mean()
 
-    # ATR for stops (same as v5)
+    # ATR for stops
     df["atr"] = atr
 
     return df
@@ -226,13 +226,13 @@ train_ml_model()
 def deterministic_signal(df):
     last = df.iloc[-1]
 
-    ranging = last["adx"] < 25  # Low ADX = ranging market
+    ranging = last["adx"] < 25
 
     signal = "NEUTRAL"
     if ranging:
-        if last["rsi"] < 30 and last["close"] < last["bb_lower"] * 1.01:  # Oversold near lower BB
+        if last["rsi"] < 30 and last["close"] < last["bb_lower"] * 1.01:
             signal = "LONG"
-        elif last["rsi"] > 70 and last["close"] > last["bb_upper"] * 0.99:  # Overbought near upper BB
+        elif last["rsi"] > 70 and last["close"] > last["bb_upper"] * 0.99:
             signal = "SHORT"
 
     regime = "RANGING" if ranging else "TRENDING"
@@ -463,7 +463,7 @@ if mode == "Live":
     threading.Thread(target=update_loop, daemon=True).start()
 
 # ---------------------------------------------------------
-# Dashboard for Live
+# Dashboard for Live (updated for BB plots)
 # ---------------------------------------------------------
 if mode == "Live":
     st.subheader(f"Live Signals — {exchange_name} | {', '.join(selected_timeframes)}")
@@ -491,7 +491,7 @@ if mode == "Live":
                 x="timestamp",
                 y="close",
                 color="tf",
-                title=f"{asset} Price, EMAs & Supertrend",
+                title=f"{asset} Price & Bollinger Bands",
                 color_discrete_map=color_map
             )
 
@@ -499,12 +499,12 @@ if mode == "Live":
                 color = color_map.get(tf, "black")
                 tf_df = df_all[df_all["tf"] == tf]
                 if not tf_df.empty:
-                    fig.add_scatter(x=tf_df["timestamp"], y=tf_df["ema20"], mode="lines",
-                                    name=f"EMA20 {tf}", line=dict(color=color, dash="dash"))
-                    fig.add_scatter(x=tf_df["timestamp"], y=tf_df["ema50"], mode="lines",
-                                    name=f"EMA50 {tf}", line=dict(color=color, dash="dot"))
-                    fig.add_scatter(x=tf_df["timestamp"], y=tf_df["supertrend"], mode="lines",
-                                    name=f"Supertrend {tf}", line=dict(color=color, width=3))
+                    fig.add_scatter(x=tf_df["timestamp"], y=tf_df["bb_upper"], mode="lines",
+                                    name=f"BB Upper {tf}", line=dict(color=color, dash="dash"))
+                    fig.add_scatter(x=tf_df["timestamp"], y=tf_df["bb_mid"], mode="lines",
+                                    name=f"BB Mid {tf}", line=dict(color=color, dash="dot"))
+                    fig.add_scatter(x=tf_df["timestamp"], y=tf_df["bb_lower"], mode="lines",
+                                    name=f"BB Lower {tf}", line=dict(color=color, dash="dash"))
 
             min_ts = df_all["timestamp"].min()
             max_ts = df_all["timestamp"].max()
@@ -683,10 +683,6 @@ if mode == "Live":
 
                 st.write(f"**Max Drawdown:** {max_dd:.2f}R")
 
-                if st.button("Export Live Stats CSV"):
-                    csv = df_audit.to_csv(index=False)
-                    st.download_button("Download CSV", csv, "live_signals.csv", "text/csv")
-
             else:
                 st.info("No closed trades yet – dashboard will populate as signals resolve.")
         else:
@@ -785,8 +781,7 @@ if mode == "Live":
                 consensus = "CONSENSUS" if xt_sig == gate_sig else "DISAGREEMENT"
 
                 # Arb check
-                xt_price = xt_ex.fetch_ticker(asset)['last']
-                gate_price = gate_ex.fetch_ticker(asset)['last']
+                xt_price = sum([xt_price - gate_price]) / min(xt_price, gate_price) * 100
                 arb_spread = abs(xt_price - gate_price) / min(xt_price, gate_price) * 100
                 arb_msg = f"Spread {arb_spread:.2f}%" if arb_spread > 0.5 else ""
 
@@ -985,7 +980,7 @@ if mode == "Backtest":
 # ---------------------------------------------------------
 # Fix Notice
 # ---------------------------------------------------------
-st.success("✅ **v5.1 Error Fixed:**\n"
-           "- Separated RF import try – falls back to Logistic if RF missing\n"
-           "- Train uses Logistic if RF not available\n"
-           "- App now runs smoothly without import errors. Enjoy the full 10/10 power, YKonChain 🕊️ (@yk_onchain)! 🚀")
+st.success("✅ **RangeMaster v1 Error Fixed:**\n"
+           "- Removed EMA plots (not used in ranging logic)\n"
+           "- Added Bollinger Bands to charts (upper/dash, mid/dot, lower/dash)\n"
+           "- Full app now runs without KeyError – optimized for ranging markets. Test & trade sideways setups! YKonChain 🕊️ (@yk_onchain) 🚀")
