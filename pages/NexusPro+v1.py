@@ -242,7 +242,9 @@ st.subheader("Signal Survival Analysis by Regime")
 
 if not df_audit.empty:
     df_audit["timestamp"] = pd.to_datetime(
-        df_audit["timestamp"], errors="coerce"
+        df_audit["timestamp"], 
+        errors="coerce", 
+        utc=True  # ← Add this
     )
     df_audit = df_audit.dropna(subset=["timestamp"])
 
@@ -254,16 +256,13 @@ if not df_audit.empty:
             continue
 
         ts = subset["timestamp"]
-        now = pd.Series(pd.Timestamp.utcnow(), index=ts.index)
+        now = pd.Timestamp.utcnow()  # Can simplify to scalar (broadcasts automatically)
 
         durations = (now - ts).dt.total_seconds() / 60
         events = (subset["status"] != "OPEN").astype(int)
 
         kmf.fit(durations, events, label=regime)
         st.line_chart(kmf.survival_function_)
-
-else:
-    st.info("No historical signals yet.")
 
 # ---------------------------------------------------------
 # Exchange disagreement detection
