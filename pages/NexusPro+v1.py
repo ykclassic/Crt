@@ -40,21 +40,36 @@ CREATE TABLE IF NOT EXISTS signals (
     take REAL,
     confidence REAL,
     model_hash TEXT,
-    status TEXT
+    status TEXT,
+    exit_timestamp TEXT,
+    exit_price REAL
 )
 """)
 DB.commit()
+
+# Add missing columns if they don't exist (idempotent)
+def add_column(name, type_):
+    try:
+        DB.execute(f"ALTER TABLE signals ADD COLUMN {name} {type_}")
+        DB.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+add_column("exit_timestamp", "TEXT")
+add_column("exit_price", "REAL")
 
 def log_signal(r: dict):
     DB.execute("""
         INSERT INTO signals (
             timestamp, exchange, asset, timeframe, regime,
-            signal, entry, stop, take, confidence, model_hash, status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            signal, entry, stop, take, confidence, model_hash, status,
+            exit_timestamp, exit_price
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         r["timestamp"], r["exchange"], r["asset"], r["timeframe"],
         r["regime"], r["signal"], r["entry"], r["stop"], r["take"],
-        r["confidence"], r["model_hash"], r["status"]
+        r["confidence"], r["model_hash"], r["status"],
+        None, None
     ))
     DB.commit()
 
@@ -170,7 +185,7 @@ def generate_signal(symbol):
     return record, df
 
 # ---------------------------------------------------------
-# INITIAL SYNC FETCH  ✅ FIXES “data unavailable”
+# INITIAL SYNC FETCH
 # ---------------------------------------------------------
 signals_cache = {}
 
@@ -181,15 +196,52 @@ for asset in selected_assets:
         print(f"Initial fetch failed {asset}: {e}")
 
 # ---------------------------------------------------------
-# Background update loop
+# Background update loop WITH CLOSURE LOGIC
 # ---------------------------------------------------------
 def update_loop():
     while True:
         for asset in selected_assets:
             try:
+                # Fetch fresh data
+                df = fetch_ohlcv(asset, TIMEFRAME)
+                df = compute_indicators(df)
+                current_price = df.iloc[-1]["close"]
+
+                # === SIGNAL CLOSURE LOGIC (SL/TP hit check) ===
+                params = (asset, TIMEFRAME, exchange_name)
+                open_signals = DB.execute("""
+                    SELECT id, signal, stop, take FROM signals
+                    WHERE asset = ? AND timeframe = ? AND exchange = ? AND status = 'OPEN'
+                """, params).fetchall()
+
+                for sig_id, sig, stop, take in open_signals:
+                    status_new = None
+                    if sig == "LONG":
+                        if current_price <= stop:
+                            status_new = "CLOSED_LOSS"
+                        elif current_price >= take:
+                            status_new = "CLOSED_WIN"
+                    elif sig == "SHORT":
+                        if current_price >= stop:
+                            status_new = "CLOSED_LOSS"
+                        elif current_price <= take:
+                            status_new = "CLOSED_WIN"
+
+                    if status_new:
+                        DB.execute("""
+                            UPDATE signals
+                            SET status = ?, exit_price = ?, exit_timestamp = ?
+                            WHERE id = ?
+                        """, (status_new, current_price, datetime.utcnow().isoformat(), sig_id))
+
+                DB.commit()
+
+                # === Generate & log new current signal ===
                 signals_cache[asset] = generate_signal(asset)
+
             except Exception as e:
                 print(f"Update error {asset}: {e}")
+
         time.sleep(60)
 
 threading.Thread(target=update_loop, daemon=True).start()
@@ -236,17 +288,27 @@ df_audit = pd.read_sql_query(
 st.dataframe(df_audit, use_container_width=True)
 
 # ---------------------------------------------------------
-# Survival analysis (FIXED)
+# Survival analysis (ENHANCED with proper durations for closed signals)
 # ---------------------------------------------------------
 st.subheader("Signal Survival Analysis by Regime")
 
 if not df_audit.empty:
-    df_audit["timestamp"] = pd.to_datetime(
-        df_audit["timestamp"], 
-        errors="coerce", 
-        utc=True  # ← Add this
-    )
+    df_audit = df_audit.copy()
+    df_audit["timestamp"] = pd.to_datetime(df_audit["timestamp"], utc=True, errors="coerce")
+    df_audit["exit_timestamp"] = pd.to_datetime(df_audit["exit_timestamp"], utc=True, errors="coerce")
     df_audit = df_audit.dropna(subset=["timestamp"])
+
+    now = pd.Timestamp.utcnow()
+
+    open_mask = df_audit["status"] == "OPEN"
+
+    df_audit["duration_min"] = 0.0
+    df_audit.loc[open_mask, "duration_min"] = (now - df_audit.loc[open_mask, "timestamp"]).dt.total_seconds() / 60
+    df_audit.loc[~open_mask, "duration_min"] = (df_audit.loc[~open_mask, "exit_timestamp"] - df_audit.loc[~open_mask, "timestamp"]).dt.total_seconds() / 60
+
+    df_audit["event_observed"] = (~open_mask).astype(int)
+
+    df_audit = df_audit.dropna(subset=["duration_min"])
 
     kmf = KaplanMeierFitter()
 
@@ -255,14 +317,11 @@ if not df_audit.empty:
         if len(subset) < 2:
             continue
 
-        ts = subset["timestamp"]
-        now = pd.Timestamp.utcnow()  # Can simplify to scalar (broadcasts automatically)
-
-        durations = (now - ts).dt.total_seconds() / 60
-        events = (subset["status"] != "OPEN").astype(int)
-
-        kmf.fit(durations, events, label=regime)
+        kmf.fit(subset["duration_min"], subset["event_observed"], label=regime)
         st.line_chart(kmf.survival_function_)
+
+else:
+    st.info("No historical signals yet.")
 
 # ---------------------------------------------------------
 # Exchange disagreement detection
