@@ -334,7 +334,7 @@ if mode == "Live":
                 st.error(f"Initial fetch failed {asset} {tf}: {e}")
 
 # ---------------------------------------------------------
-# Background Update Loop for Live (enhanced closure)
+# Background Update Loop for Live (enhanced with full alert details)
 # ---------------------------------------------------------
 higher_map = {"1h": "4h", "4h": "1d", "1d": None}
 
@@ -361,6 +361,7 @@ if mode == "Live":
                         """, (asset, tf, exchange_name)).fetchall()
 
                         hit_found = False
+                        closure_msg = ""
                         if open_signals:
                             sig_id, sig_ts, sig, entry, stop, take = open_signals[0]
                             since_ms = int(pd.to_datetime(sig_ts, utc=True).timestamp() * 1000) + 1
@@ -401,6 +402,7 @@ if mode == "Live":
                                         WHERE id = ?
                                     """, (status_new, exit_price, exit_time, sig_id))
                                     hit_found = True
+                                    closure_msg = f"{asset} {tf} {status_new.replace('CLOSED_', '')} | Entry {entry:.2f} | SL {stop:.2f} | TP {take:.2f} | Exit {exit_price:.2f}"
 
                         DB.commit()
 
@@ -412,6 +414,7 @@ if mode == "Live":
                                 UPDATE signals SET status = 'CLOSED_REGIME_CHANGE', exit_price = ?, exit_timestamp = ?
                                 WHERE id = ?
                             """, (current_price, now_iso, prev_id))
+                            closure_msg = f"{asset} {tf} CLOSED_REGIME_CHANGE | Entry {entry:.2f} | SL {stop:.2f} | TP {take:.2f} | Exit {current_price:.2f}"
 
                         DB.commit()
 
@@ -419,7 +422,9 @@ if mode == "Live":
 
                         if webhook_url:
                             if new_alert:
-                                alert_messages.append(f"🆕 New {record['signal']} {asset} {tf} | Entry {record['entry']:.2f} | Conf {record['confidence']:.1f}%")
+                                alert_messages.append(f"🆕 New {record['signal']} {asset} {tf} | Entry {record['entry']:.2f} | SL {record['stop']:.2f} | TP {record['take']:.2f} | Conf {record['confidence']:.1f}%")
+                            if hit_found or closure_msg:
+                                alert_messages.append(f"🔒 {closure_msg}")
 
                     except Exception as e:
                         print(f"Update error {asset} {tf}: {e}")
@@ -440,7 +445,7 @@ if mode == "Live":
     threading.Thread(target=update_loop, daemon=True).start()
 
 # ---------------------------------------------------------
-# Dashboard for Live (enhanced with try/except)
+# Dashboard for Live
 # ---------------------------------------------------------
 if mode == "Live":
     st.subheader(f"Live Signals — {exchange_name} | {', '.join(selected_timeframes)}")
@@ -834,7 +839,7 @@ if mode == "Backtest":
                         exit_price *= (1 - slippage_pct/100 if hit_sl else 1 + slippage_pct/100) if open_signal["signal"] == "LONG" else (1 + slippage_pct/100 if hit_sl else 1 - slippage_pct/100)
 
                         pnl = (exit_price - open_signal["entry"]) * open_signal["size"] if open_signal["signal"] == "LONG" else (open_signal["entry"] - exit_price) * open_signal["size"]
-                        pnl -= 2 * fee_pct/100 * abs(pnl + open_signal["entry"] * open_signal["size"])  # approximate round-trip
+                        pnl -= 2 * fee_pct/100 * abs(pnl + open_signal["entry"] * open_signal["size"])
 
                         backtest_trades.append({
                             "asset": asset,
@@ -908,10 +913,10 @@ if mode == "Backtest":
         st.info("No trades generated in backtest period.")
 
 # ---------------------------------------------------------
-# Final Fix Notice
+# Fix Notice
 # ---------------------------------------------------------
-st.success("✅ **Traceback Error Fixed:**\n"
-           "- Added try/except around all pandas/SQL operations to handle failures gracefully\n"
-           "- Ensured df_audit is defined before use with error messages if query fails\n"
-           "- All sections (performance, survival, etc.) now robust – skips if no data or error\n"
-           "- App is even more stable. Run this version and the error should be gone! If not, share the full traceback. YKonChain 🕊️ (@yk_onchain) 🚀")
+st.success("✅ **Alert Enhancement Complete:**\n"
+           "- Alerts now include entry, SL, and TP for new signals\n"
+           "- Closures include original entry, SL, TP, and exit price\n"
+           "- Test with your webhook – messages are more detailed for better trading context!\n"
+           "The app is now even more actionable. If alerts look good, we're golden. YKonChain 🕊️ (@yk_onchain) 🚀")
