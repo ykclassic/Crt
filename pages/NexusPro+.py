@@ -1,4 +1,8 @@
-# Nexus Neural v4 — Full Production-Ready
+# =========================================================
+# Nexus Neural v4 — Deterministic Ensemble Signal Engine
+# XT + Gate.io | Deterministic Logic | Survival Analysis
+# =========================================================
+
 import streamlit as st
 import ccxt
 import pandas as pd
@@ -10,18 +14,18 @@ import threading
 import time
 from datetime import datetime
 from lifelines import KaplanMeierFitter
-import shap
 
-# -----------------------------
+# ---------------------------------------------------------
 # Page config
-# -----------------------------
+# ---------------------------------------------------------
 st.set_page_config(page_title="Nexus Neural v4", page_icon="🌐", layout="wide")
-st.title("🌐 Nexus Neural v4 — Deterministic ML + Ensemble Signals")
+st.title("🌐 Nexus Neural v4 — Deterministic Ensemble Signal Engine")
 
-# -----------------------------
-# Database setup
-# -----------------------------
+# ---------------------------------------------------------
+# Database
+# ---------------------------------------------------------
 DB = sqlite3.connect("nexus_signals.db", check_same_thread=False)
+
 DB.execute("""
 CREATE TABLE IF NOT EXISTS signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,32 +45,36 @@ CREATE TABLE IF NOT EXISTS signals (
 """)
 DB.commit()
 
-def log_signal(record):
+def log_signal(r: dict):
     DB.execute("""
         INSERT INTO signals (
-            timestamp, exchange, asset, timeframe, regime, signal,
-            entry, stop, take, confidence, model_hash, status
+            timestamp, exchange, asset, timeframe, regime,
+            signal, entry, stop, take, confidence, model_hash, status
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
-        record["timestamp"], record["exchange"], record["asset"], record["timeframe"],
-        record["regime"], record["signal"], record["entry"], record["stop"], record["take"],
-        record["confidence"], record["model_hash"], record["status"]
+        r["timestamp"], r["exchange"], r["asset"], r["timeframe"],
+        r["regime"], r["signal"], r["entry"], r["stop"], r["take"],
+        r["confidence"], r["model_hash"], r["status"]
     ))
     DB.commit()
 
-# -----------------------------
-# Exchange selection
-# -----------------------------
-exchange_name = st.sidebar.selectbox("Select Exchange", ["XT", "Gate.io"])
-TIMEFRAMES = ["1h","4h","1d"]
-TIMEFRAME = st.sidebar.selectbox("Select Primary Timeframe", TIMEFRAMES)
-ALL_ASSETS = ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","ADA/USDT",
-              "LINK/USDT","DOGE/USDT","TRX/USDT","SUI/USDT","PEPE/USDT"]
-selected_assets = st.sidebar.multiselect("Select Assets", ALL_ASSETS, default=ALL_ASSETS[:5])
+# ---------------------------------------------------------
+# Sidebar controls
+# ---------------------------------------------------------
+exchange_name = st.sidebar.selectbox("Signal Base Exchange", ["XT", "Gate.io"])
+TIMEFRAME = st.sidebar.selectbox("Primary Timeframe", ["1h", "4h", "1d"])
 
-# -----------------------------
-# Exchange initialization
-# -----------------------------
+ASSETS = [
+    "BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","ADA/USDT",
+    "LINK/USDT","DOGE/USDT","TRX/USDT","SUI/USDT","PEPE/USDT"
+]
+selected_assets = st.sidebar.multiselect(
+    "Assets", ASSETS, default=ASSETS[:5]
+)
+
+# ---------------------------------------------------------
+# Exchange loader
+# ---------------------------------------------------------
 @st.cache_resource
 def get_exchange(name):
     if name == "XT":
@@ -78,149 +86,236 @@ def get_exchange(name):
 
 exchange = get_exchange(exchange_name)
 
-# -----------------------------
-# Indicators & deterministic logic
-# -----------------------------
+# ---------------------------------------------------------
+# Indicators
+# ---------------------------------------------------------
 def compute_indicators(df):
     df = df.copy()
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
+
     delta = df["close"].diff()
-    up, down = delta.clip(lower=0), -delta.clip(upper=0)
-    df["rsi"] = 100 - (100 / (1 + up.rolling(14).mean() / down.rolling(14).mean()))
-    df["vwap"] = (df["close"]*df["volume"]).cumsum() / df["volume"].cumsum()
-    df.fillna(method="bfill", inplace=True)
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    rs = up.rolling(14).mean() / down.rolling(14).mean()
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    df["vwap"] = (df["close"] * df["volume"]).cumsum() / df["volume"].cumsum()
     return df
 
+# ---------------------------------------------------------
+# Deterministic signal engine
+# ---------------------------------------------------------
 def deterministic_signal(df):
     last = df.iloc[-1]
-    signal = "NEUTRAL"
+
     if last["close"] > last["ema20"] and last["rsi"] < 70:
         signal = "LONG"
     elif last["close"] < last["ema20"] and last["rsi"] > 30:
         signal = "SHORT"
-    regime = "BULLISH" if last["close"] > last["ema50"] else "BEARISH" if last["close"] < last["ema50"] else "SIDEWAYS"
+    else:
+        signal = "NEUTRAL"
+
+    if last["close"] > last["ema50"]:
+        regime = "BULLISH"
+    elif last["close"] < last["ema50"]:
+        regime = "BEARISH"
+    else:
+        regime = "SIDEWAYS"
+
     entry = last["close"]
-    stop = entry*0.98 if signal=="LONG" else entry*1.02 if signal=="SHORT" else entry
-    take = entry*1.03 if signal=="LONG" else entry*0.97 if signal=="SHORT" else entry
+    stop = entry * (0.98 if signal == "LONG" else 1.02)
+    take = entry * (1.03 if signal == "LONG" else 0.97)
+
     return signal, regime, entry, stop, take
 
 def ml_confidence(df):
-    return np.random.uniform(75,99)
+    # deterministic placeholder (replace with real model later)
+    return float(np.clip(70 + df["rsi"].iloc[-1] / 2, 70, 95))
 
-dummy_model = lambda X: X["ema20"]*0.5 + X["rsi"]*0.3 + X["vwap"]*0.2
-explainer = shap.Explainer(dummy_model, ["ema20","rsi","vwap"])
-
-# -----------------------------
-# Fetch OHLCV
-# -----------------------------
+# ---------------------------------------------------------
+# Data fetch
+# ---------------------------------------------------------
 def fetch_ohlcv(symbol, tf, limit=200):
-    try:
-        data = exchange.fetch_ohlcv(symbol, tf, limit=limit)
-        df = pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-        return compute_indicators(df)
-    except:
-        return None
+    data = exchange.fetch_ohlcv(symbol, tf, limit=limit)
+    df = pd.DataFrame(
+        data, columns=["timestamp","open","high","low","close","volume"]
+    )
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    return df
 
-# -----------------------------
-# Generate signal
-# -----------------------------
-def generate_signal(symbol, tf):
-    df = fetch_ohlcv(symbol, tf)
-    if df is None or df.empty:
-        return None
+def generate_signal(symbol):
+    df = fetch_ohlcv(symbol, TIMEFRAME)
+    df = compute_indicators(df)
+
     signal, regime, entry, stop, take = deterministic_signal(df)
     confidence = ml_confidence(df)
-    ts = datetime.utcnow().isoformat()
-    model_hash = hashlib.md5(b"NexusNeuralV4").hexdigest()
-
-    X = df[["ema20","rsi","vwap"]].tail(50)
-    shap_values = explainer(X)
 
     record = {
-        "timestamp": ts,
+        "timestamp": datetime.utcnow().isoformat(),
         "exchange": exchange_name,
         "asset": symbol,
-        "timeframe": tf,
+        "timeframe": TIMEFRAME,
         "regime": regime,
         "signal": signal,
         "entry": entry,
         "stop": stop,
         "take": take,
         "confidence": confidence,
-        "model_hash": model_hash,
-        "status": "OPEN",
-        "shap_values": shap_values.values[-1],
-        "shap_features": X.columns.tolist()
+        "model_hash": hashlib.md5(b"NexusNeuralV4").hexdigest(),
+        "status": "OPEN"
     }
+
     log_signal(record)
     return record, df
 
-# -----------------------------
-# Real-time update loop
-# -----------------------------
+# ---------------------------------------------------------
+# INITIAL SYNC FETCH  ✅ FIXES “data unavailable”
+# ---------------------------------------------------------
 signals_cache = {}
 
+for asset in selected_assets:
+    try:
+        signals_cache[asset] = generate_signal(asset)
+    except Exception as e:
+        print(f"Initial fetch failed {asset}: {e}")
+
+# ---------------------------------------------------------
+# Background update loop
+# ---------------------------------------------------------
 def update_loop():
     while True:
         for asset in selected_assets:
             try:
-                res = generate_signal(asset, TIMEFRAME)
-                if res:
-                    signals_cache[asset] = res
+                signals_cache[asset] = generate_signal(asset)
             except Exception as e:
-                print(f"Error {asset}: {e}")
+                print(f"Update error {asset}: {e}")
         time.sleep(60)
 
 threading.Thread(target=update_loop, daemon=True).start()
 
-# -----------------------------
+# ---------------------------------------------------------
 # Dashboard
-# -----------------------------
+# ---------------------------------------------------------
 st.subheader(f"Live Signals — {exchange_name} | {TIMEFRAME}")
 
-for asset in selected_assets:
-    if asset not in signals_cache:
-        st.warning(f"{asset} data unavailable yet")
-        continue
-    record, df = signals_cache[asset]
-
+for asset, (record, df) in signals_cache.items():
     st.markdown(f"### {asset}")
-    fig = px.line(df, x="timestamp", y=["close","ema20","ema50"])
+
+    fig = px.line(
+        df, x="timestamp", y=["close","ema20","ema50"],
+        title=f"{asset} Price & EMAs"
+    )
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown(f"Signal: **{record['signal']}** ({record['regime']})")
-    st.markdown(f"Entry / SL / TP: {record['entry']:.2f} / {record['stop']:.2f} / {record['take']:.2f}")
-    st.markdown(f"Confidence: {record['confidence']:.2f}%")
+    color = (
+        "green" if record["signal"] == "LONG"
+        else "red" if record["signal"] == "SHORT"
+        else "yellow"
+    )
 
-# -----------------------------
-# Signal Survival Analysis (FIXED)
-# -----------------------------
+    st.markdown(
+        f"<b style='color:{color}'>"
+        f"{record['signal']} | {record['regime']}</b>",
+        unsafe_allow_html=True
+    )
+    st.write(
+        f"Entry: {record['entry']:.2f} | "
+        f"SL: {record['stop']:.2f} | "
+        f"TP: {record['take']:.2f}"
+    )
+    st.write(f"Confidence: {record['confidence']:.2f}%")
+
+# ---------------------------------------------------------
+# Signal lifecycle table
+# ---------------------------------------------------------
+st.subheader("Signal Lifecycle Table")
+df_audit = pd.read_sql_query(
+    "SELECT * FROM signals ORDER BY timestamp DESC", DB
+)
+st.dataframe(df_audit, use_container_width=True)
+
+# ---------------------------------------------------------
+# Survival analysis (FIXED)
+# ---------------------------------------------------------
 st.subheader("Signal Survival Analysis by Regime")
-df_audit = pd.read_sql_query("SELECT * FROM signals ORDER BY timestamp DESC", DB)
 
 if not df_audit.empty:
+    df_audit["timestamp"] = pd.to_datetime(
+        df_audit["timestamp"], 
+        errors="coerce", 
+        utc=True  # ← Add this
+    )
+    df_audit = df_audit.dropna(subset=["timestamp"])
+
     kmf = KaplanMeierFitter()
 
-    for regime in df_audit["regime"].dropna().unique():
+    for regime in df_audit["regime"].unique():
         subset = df_audit[df_audit["regime"] == regime]
-
-        ts_series = pd.to_datetime(
-            subset["timestamp"],
-            utc=True,
-            errors="coerce"
-        ).dropna()
-
-        if ts_series.empty:
+        if len(subset) < 2:
             continue
 
-        now = pd.Timestamp.now(tz="UTC")
-        durations = (now - ts_series).dt.total_seconds() / 60
+        ts = subset["timestamp"]
+        now = pd.Timestamp.utcnow()  # Can simplify to scalar (broadcasts automatically)
 
-        events = subset.loc[ts_series.index, "status"].ne("OPEN").astype(int)
+        durations = (now - ts).dt.total_seconds() / 60
+        events = (subset["status"] != "OPEN").astype(int)
 
         kmf.fit(durations, events, label=regime)
         st.line_chart(kmf.survival_function_)
-else:
-    st.info("No historical signals yet.")
+
+# ---------------------------------------------------------
+# Exchange disagreement detection
+# ---------------------------------------------------------
+st.subheader("Exchange Disagreement (XT vs Gate.io)")
+
+xt = get_exchange("XT")
+gate = get_exchange("Gate.io")
+
+rows = []
+
+for asset in selected_assets:
+    try:
+        xt_df = compute_indicators(
+            pd.DataFrame(
+                xt.fetch_ohlcv(asset, TIMEFRAME),
+                columns=["timestamp","open","high","low","close","volume"]
+            )
+        )
+        gate_df = compute_indicators(
+            pd.DataFrame(
+                gate.fetch_ohlcv(asset, TIMEFRAME),
+                columns=["timestamp","open","high","low","close","volume"]
+            )
+        )
+
+        xt_sig, *_ = deterministic_signal(xt_df)
+        gate_sig, *_ = deterministic_signal(gate_df)
+
+        consensus = xt_sig if xt_sig == gate_sig else "DISAGREEMENT"
+
+        rows.append({
+            "Asset": asset,
+            "XT": xt_sig,
+            "Gate": gate_sig,
+            "Consensus": consensus
+        })
+    except:
+        rows.append({
+            "Asset": asset,
+            "XT": "NA", "Gate": "NA", "Consensus": "NA"
+        })
+
+df_dis = pd.DataFrame(rows)
+
+def color(val):
+    if val == "LONG": return "color:green"
+    if val == "SHORT": return "color:red"
+    if val == "NEUTRAL": return "color:yellow"
+    if val == "DISAGREEMENT": return "color:orange"
+    return ""
+
+st.dataframe(
+    df_dis.style.applymap(color),
+    use_container_width=True
+)
