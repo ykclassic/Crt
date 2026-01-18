@@ -1,6 +1,6 @@
 # =========================================================
 # Nexus HybridTrader v1 — Trend/Range Switcher with AI Mode
-# XT + Gate.io | Dynamic Strategy Switching | AI Boosts | Backtest Mode
+# XT + Gate.io | Dynamic Strategy Switching | AI Boost | Backtest Mode
 # =========================================================
 
 import streamlit as st
@@ -267,9 +267,9 @@ def deterministic_signal(df, mode="Trend"):
     last = df.iloc[-1]
 
     if mode == "Trend":
-        super_up = last["close"] > last["supertrend"]
+        super_up = last["close"] > last["supertrend"] if "supertrend" in last else False
 
-        volume_ok = last["volume"] > last["volume_ma"] * 1.2
+        volume_ok = last["volume"] > last["volume_ma"] * 1.2 if "volume_ma" in last else True
 
         signal = "NEUTRAL"
         if last["close"] > last["ema20"] and last["rsi"] < 70 and super_up and volume_ok:
@@ -280,7 +280,7 @@ def deterministic_signal(df, mode="Trend"):
         regime = "BULLISH" if last["close"] > last["ema50"] else "BEARISH" if last["close"] < last["ema50"] else "SIDEWAYS"
 
         entry = last["close"]
-        atr = last["atr"] if not np.isnan(last["atr"]) else entry * 0.01
+        atr = last["atr"] if "atr" in last and not np.isnan(last["atr"]) else entry * 0.01
 
         if signal == "LONG":
             stop = entry - atr_multiplier_stop * atr
@@ -296,24 +296,24 @@ def deterministic_signal(df, mode="Trend"):
             float((last["close"] - last["ema20"]) / last["ema20"] if last["ema20"] != 0 else 0),
             float((last["close"] - last["ema50"]) / last["ema50"] if last["ema50"] != 0 else 0),
             float(atr / entry),
-            float((last["close"] - last["supertrend"]) / entry),
-            float(last["volume"] / last["volume_ma"] if last["volume_ma"] != 0 else 0)
+            float((last["close"] - last["supertrend"]) / entry if "supertrend" in last else 0),
+            float(last["volume"] / last["volume_ma"] if "volume_ma" in last and last["volume_ma"] != 0 else 0)
         ])
 
     else:  # Range
-        ranging = last["adx"] < 25
+        ranging = last["adx"] < 25 if "adx" in last else False
 
         signal = "NEUTRAL"
         if ranging:
-            if last["rsi"] < 30 and last["close"] < last["bb_lower"] * 1.01:
+            if last["rsi"] < 30 and last["close"] < last["bb_lower"] * 1.01 if "bb_lower" in last else False:
                 signal = "LONG"
-            elif last["rsi"] > 70 and last["close"] > last["bb_upper"] * 0.99:
+            elif last["rsi"] > 70 and last["close"] > last["bb_upper"] * 0.99 if "bb_upper" in last else False:
                 signal = "SHORT"
 
         regime = "RANGING" if ranging else "TRENDING"
 
         entry = last["close"]
-        atr = last["atr"] if not np.isnan(last["atr"]) else entry * 0.01
+        atr = last["atr"] if "atr" in last and not np.isnan(last["atr"]) else entry * 0.01
 
         if signal == "LONG":
             stop = entry - atr_multiplier_stop * atr
@@ -326,8 +326,8 @@ def deterministic_signal(df, mode="Trend"):
 
         features = json.dumps([
             float(last["rsi"]),
-            float((last["close"] - last["bb_mid"]) / last["bb_std"]),
-            float(last["adx"]),
+            float((last["close"] - last["bb_mid"]) / last["bb_std"] if "bb_mid" in last and "bb_std" in last else 0),
+            float(last["adx"] if "adx" in last else 0),
             float(atr / entry)
         ])
 
@@ -336,11 +336,10 @@ def deterministic_signal(df, mode="Trend"):
     if ai_mode:
         try:
             sentiment_data = x_semantic_search(query=f"{asset} sentiment last 24h", limit=20)
-            # Simple sentiment parse (improve with LLM summary)
-            positive = sentiment_data.count("bullish") + sentiment_data.count("up")
-            negative = sentiment_data.count("bearish") + sentiment_data.count("down")
+            positive = str(sentiment_data).count("bullish") + str(sentiment_data).count("up")
+            negative = str(sentiment_data).count("bearish") + str(sentiment_data).count("down")
             sentiment = 1 if positive > negative else -1 if negative > positive else 0
-            confidence += sentiment * 5  # Adjust based on sentiment
+            confidence += sentiment * 5
         except:
             pass
 
@@ -854,17 +853,17 @@ if mode == "Live":
                     pd.DataFrame(
                         xt_ex.fetch_ohlcv(asset, tf, limit=200),
                         columns=["timestamp","open","high","low","close","volume"]
-                    )
+                    ), mode=strategy_mode
                 )
                 gate_df = compute_indicators(
                     pd.DataFrame(
                         gate_ex.fetch_ohlcv(asset, tf, limit=200),
                         columns=["timestamp","open","high","low","close","volume"]
-                    )
+                    ), mode=strategy_mode
                 )
 
-                xt_sig, *_ = deterministic_signal(xt_df)
-                gate_sig, *_ = deterministic_signal(gate_df)
+                xt_sig, *_ = deterministic_signal(xt_df, mode=strategy_mode)
+                gate_sig, *_ = deterministic_signal(gate_df, mode=strategy_mode)
 
                 consensus = "CONSENSUS" if xt_sig == gate_sig else "DISAGREEMENT"
 
@@ -942,7 +941,7 @@ if mode == "Backtest":
                 since = int(chunk["timestamp"].iloc[-1].timestamp() * 1000) + 1
             if not df_hist.empty:
                 df_hist = df_hist.drop_duplicates(subset=["timestamp"]).sort_values("timestamp")
-                df_hist = compute_indicators(df_hist)
+                df_hist = compute_indicators(df_hist, mode=strategy_mode)
                 tf_data[tf] = df_hist.dropna()
 
         for tf in selected_timeframes:
@@ -963,9 +962,9 @@ if mode == "Backtest":
                 if higher_tf and higher_tf in tf_data:
                     higher_df = tf_data[higher_tf]
                     higher_row = higher_df[higher_df["timestamp"] <= current_time].iloc[-1]
-                    higher_regime = "BULLISH" if higher_row["close"] > higher_row["ema50"] else "BEARISH" if higher_row["close"] < higher_row["ema50"] else "SIDEWAYS"
+                    higher_regime = "BULLISH" if higher_row["close"] > higher_row["ema50"] if "ema50" in higher_row else "SIDEWAYS" else "BEARISH" if higher_row["close"] < higher_row["ema50"] if "ema50" in higher_row else "SIDEWAYS" else "SIDEWAYS"
 
-                signal, regime, entry, stop, take, confidence, _ = deterministic_signal(current_candle)
+                signal, regime, entry, stop, take, confidence, _ = deterministic_signal(current_candle, mode=strategy_mode)
 
                 confirmed = True
                 if require_confirmation and higher_tf:
@@ -980,96 +979,4 @@ if mode == "Backtest":
                     if profit_1r:
                         new_stop = current_price * (1 - trailing_stop_pct / 100) if open_signal["signal"] == "LONG" else current_price * (1 + trailing_stop_pct / 100)
                         if (open_signal["signal"] == "LONG" and new_stop > open_signal["stop"]) or (open_signal["signal"] == "SHORT" and new_stop < open_signal["stop"]):
-                            open_signal["stop"] = new_stop
-
-                    hit_sl = (open_signal["signal"] == "LONG" and current_candle["low"].iloc[0] <= open_signal["stop"]) or \
-                             (open_signal["signal"] == "SHORT" and current_candle["high"].iloc[0] >= open_signal["stop"])
-                    hit_tp = (open_signal["signal"] == "LONG" and current_candle["high"].iloc[0] >= open_signal["take"]) or \
-                             (open_signal["signal"] == "SHORT" and current_candle["low"].iloc[0] <= open_signal["take"])
-
-                    if hit_sl or hit_tp:
-                        exit_price = open_signal["stop"] if hit_sl else open_signal["take"]
-                        exit_price *= (1 - slippage_pct/100 if hit_sl else 1 + slippage_pct/100) if open_signal["signal"] == "LONG" else (1 + slippage_pct/100 if hit_sl else 1 - slippage_pct/100)
-
-                        pnl = (exit_price - open_signal["entry"]) * open_signal["size"] if open_signal["signal"] == "LONG" else (open_signal["entry"] - exit_price) * open_signal["size"]
-                        pnl -= 2 * fee_pct/100 * abs(pnl + open_signal["entry"] * open_signal["size"])
-
-                        backtest_trades.append({
-                            "asset": asset,
-                            "tf": tf,
-                            "entry_time": open_signal["entry_time"],
-                            "exit_time": current_time,
-                            "signal": open_signal["signal"],
-                            "pnl_usdt": pnl,
-                            "pnl_pct": pnl / current_capital * 100
-                        })
-
-                        current_capital += pnl
-                        equity_curve.append({"time": current_time, "equity": current_capital})
-
-                        open_signal = None
-
-                if not open_signal and signal != "NEUTRAL" and confirmed:
-                    risk_amount = current_capital * (risk_percent / 100)
-                    risk_per_unit = abs(entry - stop)
-                    size = risk_amount / risk_per_unit if risk_per_unit > 0 else 0
-
-                    entry_fill = entry * (1 + slippage_pct/100 if signal == "LONG" else 1 - slippage_pct/100)
-                    fee_entry = fee_pct/100 * entry_fill * size
-
-                    open_signal = {
-                        "signal": signal,
-                        "entry": entry_fill,
-                        "stop": stop,
-                        "take": take,
-                        "entry_time": current_time,
-                        "size": size
-                    }
-                    current_capital -= fee_entry
-
-            task_count += 1
-            progress_bar.progress(task_count / total_tasks)
-
-    if backtest_trades:
-        trades_df = pd.DataFrame(backtest_trades)
-        returns = trades_df["pnl_pct"] / 100
-        total_return = (current_capital - initial_capital) / initial_capital * 100
-        win_rate = (trades_df["pnl_usdt"] > 0).mean() * 100
-        sharpe = returns.mean() / returns.std() * np.sqrt(252 * (24 if "1h" in selected_timeframes else 6 if "4h" in selected_timeframes else 1)) if returns.std() != 0 else 0
-
-        equity_df = pd.DataFrame(equity_curve).sort_values("time")
-        equity_df["peak"] = equity_df["equity"].cummax()
-        equity_df["drawdown_pct"] = (equity_df["equity"] - equity_df["peak"]) / equity_df["peak"] * 100
-        max_dd_pct = equity_df["drawdown_pct"].min()
-        calmar = (total_return / abs(max_dd_pct)) if max_dd_pct != 0 else 0
-
-        eq_fig = go.Figure()
-        eq_fig.add_scatter(x=equity_df["time"], y=equity_df["equity"], mode="lines", name="Equity")
-        eq_fig.add_scatter(x=equity_df["time"], y=equity_df["drawdown_pct"], mode="lines",
-                           fill="tozeroy", fillcolor="rgba(255,0,0,0.2)", name=f"Max DD: {max_dd_pct:.1f}%")
-        eq_fig.update_layout(title=f"Backtest Equity (Final: {current_capital:.0f} USDT | +{total_return:.1f}%)")
-        st.plotly_chart(eq_fig, use_container_width=True)
-
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Trades", len(trades_df))
-        col2.metric("Win Rate", f"{win_rate:.1f}%")
-        col3.metric("Sharpe Ratio", f"{sharpe:.2f}")
-        col4.metric("Calmar Ratio", f"{calmar:.2f}")
-        st.metric("Max Drawdown", f"{max_dd_pct:.1f}%")
-
-        st.dataframe(trades_df)
-
-        if st.button("Download Trades CSV"):
-            csv = trades_df.to_csv(index=False)
-            st.download_button("Download CSV", csv, "backtest_trades.csv", "text/csv")
-    else:
-        st.info("No trades generated in backtest period.")
-
-# ---------------------------------------------------------
-# Fix Notice
-# ---------------------------------------------------------
-st.success("✅ **HybridTrader v1 Complete:**\n"
-           "- Trend/Range switcher: Dynamic indicators/signals based on mode\n"
-           "- AI Mode: Sentiment from X boosts confidence, param optimization button, NL query input\n"
-           "- All previous features maintained (backtest, alerts, etc.)\n"
-           "- Test the switches – hybrid power unlocked! YKonChain 🕊️ (@yk_onchain) 🚀")
+                            open_signal["stop"] = new
