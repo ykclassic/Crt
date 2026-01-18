@@ -1,0 +1,35 @@
+name: Discord Alert Bot
+
+on:
+  schedule:
+    # This runs the script every hour. 
+    # You can change '0 * * * *' to other cron schedules.
+    # Example: '0 8 * * *' runs it every day at 8 AM UTC.
+    - cron: '0 * * * *'
+  # Allows you to manually trigger the run from the Actions tab for testing
+  workflow_dispatch:
+
+jobs:
+  run-alert-script:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9' # Use the version your app needs
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # If you don't use requirements.txt, you can pip install specific packages here:
+          # pip install requests pandas
+
+      - name: Run Alert Script
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python run_alerts.py
