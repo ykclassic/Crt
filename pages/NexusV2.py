@@ -572,12 +572,3 @@ styled = (
 )
 
 st.dataframe(styled, use_container_width=True)
-
-# ---------------------------------------------------------
-# Phase Status
-# ---------------------------------------------------------
-st.success("✅ **Phase 1 Bug Fixed & Solid:**\n"
-           "- Robust datetime parsing added (`errors='coerce'`) to handle any legacy/mixed timestamp formats.\n"
-           "- Extra safety: drop invalid timestamps/exits before calculations.\n"
-           "- All Phase 1 quick wins remain fully functional.\n\n"
-           "Phase 1 is now rock-solid and error-free. Ready for Phase 2 (Medium-Term Enhancements) whenever you give the go-ahead, YKonChain 🕊️!")
