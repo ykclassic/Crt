@@ -2,8 +2,8 @@ name: Nexus Intelligence Suite
 
 on:
   schedule:
-    - cron: '0 * * * *' # Runs top of every hour
-  workflow_dispatch:      # Manual trigger button
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,29 +14,29 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Python 3.9
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
       - name: Install Dependencies
-        run: pip install ccxt pandas numpy requests scikit-learn lifelines
+        run: pip install ccxt pandas numpy requests
 
-      - name: Execute Signal Engines
+      - name: Execute Engines
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          # || true ensures one script failure doesn't stop the whole suite
-          python run_alerts.py || true
           python run_alerts1.py || true
           python run_alerts2.py || true
           python run_alerts3.py || true
 
-      - name: Persist Intelligence Data
+      - name: Commit and Push Database Changes
         run: |
           git config --global user.name "nexus-bot"
-          git config --global user.email "nexus-bot@users.noreply.github.com"
-          git add *.db sent_alerts.json
-          git commit -m "Automated Intelligence Update [$(date)]" || exit 0
-          git push
+          git config --global user.email "bot@nexus.ai"
+          git add *.db
+          git commit -m "Update Intelligence DB [$(date)]" || echo "No changes to commit"
+          git push origin main
