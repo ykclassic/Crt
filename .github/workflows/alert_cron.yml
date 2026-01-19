@@ -6,32 +6,36 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # Allows the bot to push the JSON file back to the repo
+  contents: write
 
 jobs:
   run-alert-script:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: setup-python@v4
         with:
           python-version: '3.9'
 
       - name: Install dependencies
-        run: pip install ccxt pandas numpy requests
+        run: pip install ccxt pandas numpy requests scikit-learn lifelines
 
-      - name: Run Alert Script
+      - name: Run Scripts
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python run_alerts.py
+        run: |
+          python run_alerts.py || true
+          python run_alerts1.py || true
+          python run_alerts2.py || true
+          python run_alerts3.py || true
 
       - name: Commit and Push state
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add sent_alerts.json
-          git commit -m "Update alert state" || exit 0 # Don't fail if no changes
+          git add *.db sent_alerts.json
+          git commit -m "Update Signal Databases and State" || exit 0
           git push
