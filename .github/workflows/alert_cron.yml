@@ -2,47 +2,66 @@ name: Nexus Intelligence Suite
 
 on:
   schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
+    - cron: '0 * * * *' # Executes exactly at the top of every hour
+  workflow_dispatch:      # Allows you to trigger the bot manually from GitHub UI
 
 permissions:
-  contents: write
+  contents: write         # Required to save/push the .db files back to your repo
 
 jobs:
-  multi-engine-alerts:
+  intelligence-run:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # Fetches all history so git push works smoothly
 
-      - name: Setup Python
+      - name: Setup Python 3.9
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
       - name: Install Dependencies
-        run: pip install ccxt pandas numpy requests scikit-learn
+        run: |
+          pip install ccxt pandas numpy requests scikit-learn
 
-      - name: Execute Engines
+      - name: Execute Intelligence Engines
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          # Restored run_alerts.py + the other three
+          # 1. Run individual logic engines first
+          echo "Running Core Engine..."
           python run_alerts.py || true
+          
+          echo "Running Hybrid Engine..."
           python run_alerts1.py || true
+          
+          echo "Running RangeMaster Engine..."
           python run_alerts2.py || true
+          
+          echo "Running AI Predictor..."
           python run_alerts3.py || true
+          
+          # 2. Run Consensus Engine last (it reads the results of the others)
+          echo "Running Consensus Engine..."
+          python run_consensus.py || true
 
-      - name: Commit and Push Database Changes
+      - name: Persist Intelligence Data
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "nexus-intelligence-bot"
+          git config --global user.email "bot@nexus-ai.local"
           
-          # Sync with remote to avoid "non-fast-forward" errors
-          git pull origin main --rebase
+          # Ensure we don't have conflicts if multiple runs happen
+          git pull --rebase origin main
           
+          # Add all database files and state files
           git add *.db sent_alerts.json
-          git commit -m "Intelligence Sync: $(date)" || echo "No changes to commit"
-          git push origin main
+          
+          # Only commit if there are actually changes in the databases
+          if git diff --staged --quiet; then
+            echo "No new intelligence data to save."
+          else
+            git commit -m "Automated Intelligence Update: $(date)"
+            git push origin main
+          fi
