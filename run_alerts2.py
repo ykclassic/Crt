@@ -1,32 +1,23 @@
-import ccxt, pandas as pd, numpy as np, sqlite3, os, requests, json
+import ccxt, pandas as pd, numpy as np, sqlite3, os, requests
 from datetime import datetime
 
-# --- CONFIG ---
 WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL")
-APP_NAME = "NEXUS HYBRID V1"
-EXCHANGE = ccxt.xt()
-DB = sqlite3.connect("hybrid_v1.db")
-ASSETS = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+APP_NAME = "NEXUS RANGEMASTER"
+EXCHANGE = ccxt.gateio()
+DB = sqlite3.connect("rangemaster.db")
 
-def notify(msg):
-    if WEBHOOK: requests.post(WEBHOOK, json={"content": f"**[{APP_NAME}]**\n{msg}"})
-
-# Database Init
-DB.execute("CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY, asset TEXT, signal TEXT, ts TEXT)")
-
-for asset in ASSETS:
+# Logic: RSI Overbought/Oversold + BB Touch
+for asset in ["BTC/USDT", "XRP/USDT"]:
     try:
-        data = EXCHANGE.fetch_ohlcv(asset, '1h', limit=100)
+        data = EXCHANGE.fetch_ohlcv(asset, '1h', limit=50)
         df = pd.DataFrame(data, columns=['ts','o','h','l','c','v'])
-        df['ema20'] = df['c'].ewm(span=20).mean()
+        # RSI 14
+        delta = df['c'].diff(); up = delta.clip(lower=0); down = -delta.clip(upper=0)
+        df['rsi'] = 100 - (100 / (1 + up.rolling(14).mean() / down.rolling(14).mean()))
         last = df.iloc[-1]
         
-        signal = "LONG" if last['c'] > last['ema20'] else "SHORT"
-        
-        # Prevent duplicate alerts
-        last_sig = DB.execute("SELECT signal FROM signals WHERE asset=? ORDER BY id DESC LIMIT 1", (asset,)).fetchone()
-        if not last_sig or last_sig[0] != signal:
-            DB.execute("INSERT INTO signals (asset, signal, ts) VALUES (?,?,?)", (asset, signal, datetime.now().isoformat()))
-            DB.commit()
-            notify(f"🚀 **Trend Change Detected**\nAsset: {asset}\nDirection: {signal}\nPrice: {last['c']}")
-    except Exception as e: print(f"Error {asset}: {e}")
+        if last['rsi'] < 30:
+            notify(f"⚖️ **Mean Reversion Alert**\nAsset: {asset}\nSignal: OVERSOLD (LONG)\nRSI: {last['rsi']:.2f}")
+        elif last['rsi'] > 70:
+            notify(f"⚖️ **Mean Reversion Alert**\nAsset: {asset}\nSignal: OVERBOUGHT (SHORT)\nRSI: {last['rsi']:.2f}")
+    except Exception as e: print(f"Error: {e}")
