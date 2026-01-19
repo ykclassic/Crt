@@ -1,41 +1,42 @@
-name: Discord Alert Bot
+name: Nexus Intelligence Suite
 
 on:
   schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
+    - cron: '0 * * * *' # Runs top of every hour
+  workflow_dispatch:      # Manual trigger button
 
 permissions:
   contents: write
 
 jobs:
-  run-alert-script:
+  multi-engine-alerts:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: setup-python@v4
+      - name: Setup Python 3.9
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: pip install ccxt pandas numpy requests scikit-learn lifelines
 
-      - name: Run Scripts
+      - name: Execute Signal Engines
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
+          # || true ensures one script failure doesn't stop the whole suite
           python run_alerts.py || true
           python run_alerts1.py || true
           python run_alerts2.py || true
           python run_alerts3.py || true
 
-      - name: Commit and Push state
+      - name: Persist Intelligence Data
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "nexus-bot"
+          git config --global user.email "nexus-bot@users.noreply.github.com"
           git add *.db sent_alerts.json
-          git commit -m "Update Signal Databases and State" || exit 0
+          git commit -m "Automated Intelligence Update [$(date)]" || exit 0
           git push
