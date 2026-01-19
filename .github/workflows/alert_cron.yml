@@ -23,20 +23,26 @@ jobs:
           python-version: '3.9'
 
       - name: Install Dependencies
-        run: pip install ccxt pandas numpy requests
+        run: pip install ccxt pandas numpy requests scikit-learn
 
       - name: Execute Engines
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
+          # Restored run_alerts.py + the other three
+          python run_alerts.py || true
           python run_alerts1.py || true
           python run_alerts2.py || true
           python run_alerts3.py || true
 
       - name: Commit and Push Database Changes
         run: |
-          git config --global user.name "nexus-bot"
-          git config --global user.email "bot@nexus.ai"
-          git add *.db
-          git commit -m "Update Intelligence DB [$(date)]" || echo "No changes to commit"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Sync with remote to avoid "non-fast-forward" errors
+          git pull origin main --rebase
+          
+          git add *.db sent_alerts.json
+          git commit -m "Intelligence Sync: $(date)" || echo "No changes to commit"
           git push origin main
