@@ -17,3 +17,4 @@ reportlab
 streamlit-autorefresh
 shap
 lifelines
+pandas-ta
