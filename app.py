@@ -22,9 +22,9 @@ BASE_URL = "https://sapi.xt.com/v4/public/kline"
 SYMBOLS = ["BTC_USDT", "ETH_USDT", "SOL_USDT", "BNB_USDT"]
 
 # --- TELEGRAM SETTINGS (Replace with your actual details) ---
-TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE" 
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID_HERE"
-ENABLE_TELEGRAM = False # Set to True after entering credentials
+TELEGRAM_TOKEN = "8367963721:AAH6B819_DevFNpZracbJ5EmHrDR3DKZeR4" 
+TELEGRAM_CHAT_ID = "865482105"
+ENABLE_TELEGRAM = True # Set to True after entering credentials
 
 # --- DIRECTORIES ---
 LOG_DIR = "performance_logs"
