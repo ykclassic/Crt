@@ -7,8 +7,6 @@ import os
 import json
 from datetime import datetime
 import plotly.express as px
-from backtesting import Strategy
-from backtesting.lib import resample_apply
 
 # ============================= PAGE CONFIG =============================
 st.set_page_config(
@@ -18,199 +16,323 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ============================= XT.COM CONFIG =============================
+# ============================= CONFIGURATION =============================
+# --- API & TRADING SETTINGS ---
 BASE_URL = "https://sapi.xt.com/v4/public/kline"
 SYMBOLS = ["BTC_USDT", "ETH_USDT", "SOL_USDT", "BNB_USDT"]
 
-# ============================= LOGS =============================
+# --- TELEGRAM SETTINGS (Replace with your actual details) ---
+TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE" 
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID_HERE"
+ENABLE_TELEGRAM = False # Set to True after entering credentials
+
+# --- DIRECTORIES ---
 LOG_DIR = "performance_logs"
-REPORT_DIR = "reports"
-os.makedirs(LOG_DIR, exist_ok=True)
-os.makedirs(REPORT_DIR, exist_ok=True)
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
 
 TRADE_LOG = os.path.join(LOG_DIR, "trades.json")
 EQUITY_LOG = os.path.join(LOG_DIR, "equity.csv")
 
+# --- INITIALIZE FILES ---
 if not os.path.exists(TRADE_LOG):
     with open(TRADE_LOG, 'w') as f:
         json.dump([], f)
+
 if not os.path.exists(EQUITY_LOG):
     with open(EQUITY_LOG, 'w') as f:
         f.write("timestamp,equity,trades_count\n")
 
-# Session state for equity and running status
+# --- SESSION STATE ---
 if 'equity' not in st.session_state:
     st.session_state.equity = 100000.0
 if 'running' not in st.session_state:
     st.session_state.running = False
+if 'last_processed_ts' not in st.session_state:
+    st.session_state.last_processed_ts = {}  # Track last candle TS per symbol
 
-# ============================= DATA FETCH =============================
-@st.cache_data(ttl=30)
-def fetch_klines(symbol: str, limit: int = 1000):
+# ============================= TELEGRAM ENGINE =============================
+def send_telegram_alert(message):
+    """Sends a message to the configured Telegram bot."""
+    if not ENABLE_TELEGRAM:
+        return
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.post(url, json=payload, timeout=3)
+    except Exception as e:
+        print(f"Telegram Error: {e}")
+
+# ============================= DATA ENGINE =============================
+@st.cache_data(ttl=15)
+def fetch_klines(symbol: str, limit: int = 500):
+    """Fetches 5m candles from XT.com"""
     params = {"symbol": symbol, "interval": "5min", "limit": limit}
     try:
-        r = requests.get(BASE_URL, params=params, timeout=10)
+        r = requests.get(BASE_URL, params=params, timeout=5)
         data = r.json()
         if data.get("rc") != 0 or not data.get("data"):
             return pd.DataFrame()
+        
         df = pd.DataFrame(data["data"], columns=["ts", "open", "high", "low", "close", "volume"])
         df["ts"] = pd.to_datetime(df["ts"], unit='ms')
         df.set_index("ts", inplace=True)
         df = df.astype(float)
         return df.sort_index()
-    except:
+    except Exception as e:
+        st.error(f"API Error {symbol}: {e}")
         return pd.DataFrame()
 
-# ============================= INDICATORS =============================
-def ema(s, p): return s.ewm(span=p, adjust=False).mean()
-def atr(df, p=14):
-    tr = pd.concat([df['high']-df['low'], abs(df['high']-df['close'].shift()), abs(df['low']-df['close'].shift())], axis=1).max(axis=1)
-    return tr.rolling(p).mean()
+# ============================= LOGIC ENGINE =============================
+def calculate_indicators(df):
+    """Calculates SMC indicators on the dataframe"""
+    if df.empty: return df
+    
+    # 1. EMA 200 (Trend)
+    df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
+    
+    # 2. ATR (Volatility)
+    high_low = df['high'] - df['low']
+    high_close = np.abs(df['high'] - df['close'].shift())
+    low_close = np.abs(df['low'] - df['close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df['atr'] = tr.rolling(14).mean()
+    
+    # 3. Volume Average
+    df['vol_avg'] = df['volume'].rolling(20).mean()
 
-def detect_fvg(df):
-    bull = df['low'] > df['high'].shift(2)
-    bear = df['high'] < df['low'].shift(2)
-    return df['low'].where(bull).ffill(), df['high'].where(bear).ffill()
+    # 4. FVG Detection (3-Candle Pattern)
+    # Bull FVG: Low of Candle[0] > High of Candle[-2] (Gap Up)
+    # We shift future data to align with current row for "historical" tagging
+    # Note: For live analysis, we look at completed patterns.
+    
+    # Calculate gap boundaries for the PREVIOUS COMPLETED candle structure
+    # A gap formed at index `i` is defined by `i` (current), `i-1`, `i-2`.
+    # The gap exists between `low[i]` and `high[i-2]` (Bullish).
+    
+    df['fvg_bull_top'] = df['low']
+    df['fvg_bull_btm'] = df['high'].shift(2)
+    df['is_bull_fvg'] = df['fvg_bull_top'] > df['fvg_bull_btm']
+    
+    df['fvg_bear_top'] = df['low'].shift(2)
+    df['fvg_bear_btm'] = df['high']
+    df['is_bear_fvg'] = df['fvg_bear_btm'] < df['fvg_bear_top']
 
-def detect_swings(df, length=5):
-    highs = df['high'].rolling(length*2+1, center=True).max() == df['high']
-    lows = df['low'].rolling(length*2+1, center=True).min() == df['low']
-    return df['high'][highs], df['low'][lows]
+    return df
 
-def detect_ob(df):
-    bull_ob = (df['close'] > df['open']) & (df['close'].shift(-1) > df['high'])
-    bear_ob = (df['close'] < df['open']) & (df['close'].shift(-1) < df['low'])
-    return df['low'][bull_ob.shift(1).fillna(False)].ffill(), df['high'][bear_ob.shift(1).fillna(False)].ffill()
+def check_killzone(timestamp):
+    h = timestamp.hour
+    if 7 <= h < 10: return "London Open"
+    if 12 <= h < 15: return "New York"
+    if 15 <= h < 16: return "Silver Bullet"
+    return None
 
-# ============================= ULTIMATECRT =============================
-class UltimateCRT(Strategy):
-    atr_mult = 0.5
-    ema_period = 200
-    risk_percent = 1.0
-    min_rr = 2.0
-    volume_spike_mult = 1.5
-    sl_buffer_pct = 0.2
+def analyze_market(df, symbol):
+    """
+    Analyzes the LATEST COMPLETED candle (row -2) against history.
+    """
+    if len(df) < 201: return None
 
-    def init(self):
-        self.htf = resample_apply('240min', self.parent, self.data.df)
-        self.ema200 = resample_apply('240min', ema, self.data.Close, self.ema_period)
-        self.atr14 = resample_apply('1d', atr, self.data.df)
-        self.fvg_up, self.fvg_down = detect_fvg(self.data.df)
-        self.swing_h, self.swing_l = detect_swings(self.data.df)
-        self.ob_bull, self.ob_bear = detect_ob(self.data.df)
-        self.vol_avg = self.data.volume.rolling(20).mean()
-
-    def parent(self, df):
-        p = df.iloc[-2]
-        return pd.Series({'ph': p.high, 'pl': p.low, 'pmid': (p.high + p.low)/2, 'prange': p.high - p.low})
-
-    def killzone(self):
-        h = self.data.index[-1].hour
-        if 7 <= h < 10: return "London Open"
-        if 12 <= h < 15: return "New York"
-        if 15 <= h < 16: return "Silver Bullet"
+    # Get the completed candle (previous row, index -2)
+    curr = df.iloc[-2]
+    
+    # Ensure we haven't processed this timestamp already
+    last_ts = st.session_state.last_processed_ts.get(symbol)
+    if last_ts == curr.name:
         return None
+    
+    kz = check_killzone(curr.name)
+    if not kz: return None
 
-    def next(self):
-        if len(self.data) < 200 or self.position or not self.killzone(): return
+    # --- STRATEGY PARAMETERS ---
+    MIN_RR = 2.0
+    RISK_PCT = 0.01
 
-        ph, pl, pmid, pr = self.htf.ph[-1], self.htf.pl[-1], self.htf.pmid[-1], self.htf.prange[-1]
-        if pr < self.atr14[-1] * self.atr_mult: return
+    # --- HTF CONTEXT (Simulated using 4H resampling) ---
+    df_4h = df.resample('4h').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'})
+    if len(df_4h) < 2: return None
+    htf_candle = df_4h.iloc[-2] 
+    ph, pl = htf_candle['high'], htf_candle['low']
 
-        p, l, h = self.data.Close[-1], self.data.Low[-1], self.data.High[-1]
-        vol_spike = self.data.volume[-1] > self.vol_avg[-1] * self.volume_spike_mult
+    # --- ENTRY LOGIC ---
+    signal = None
+    
+    # 1. Trend & Volume Filter
+    bull_trend = curr['close'] > curr['ema200']
+    bear_trend = curr['close'] < curr['ema200']
+    vol_spike = curr['volume'] > curr['vol_avg'] * 1.5
 
-        sweep_l = l < pl; sweep_h = h > ph
-        rej_b = p > pl; rej_s = p < ph
-        trend_b = p > self.ema200[-1]
-        mss_b = p > (self.swing_l.dropna().iloc[-1] if len(self.swing_l.dropna()) else 0)
-        mss_s = p < (self.swing_h.dropna().iloc[-1] if len(self.swing_h.dropna()) else float('inf'))
-        fvg_b = bool(self.fvg_up.dropna().size and self.fvg_up.dropna().iloc[-1] <= p <= pmid)
-        fvg_s = bool(self.fvg_down.dropna().size and pmid <= p <= self.fvg_down.dropna().iloc[-1])
-        ob_b = bool(self.ob_bull.dropna().size and self.ob_bull.dropna().iloc[-1] <= p)
-        ob_s = bool(self.ob_bear.dropna().size and p <= self.ob_bear.dropna().iloc[-1])
+    # 2. FVG Confirmation (Did the completed candle CREATE or REJECT off an FVG?)
+    # For this strategy, we enter if the completed candle CREATED a strong FVG in trend direction
+    created_bull_fvg = curr['is_bull_fvg']
+    created_bear_fvg = curr['is_bear_fvg']
 
-        if sweep_l and rej_b and trend_b and mss_b and fvg_b and ob_b and vol_spike:
-            sl = l * (1 - self.sl_buffer_pct / 100)
-            tp2 = self.swing_h.ffill().iloc[-1] if len(self.swing_h.ffill()) else ph
-            rr = (tp2 - p) / (p - sl)
-            if rr >= self.min_rr:
-                size = st.session_state.equity * 0.01 / (p - sl)
-                self.buy(sl=sl, tp=pmid, size=size)
-                log_trade("BULLISH", p, sl, pmid, tp2, rr, size)
+    # LONG SETUP
+    if bull_trend and vol_spike and created_bull_fvg:
+        sl = curr['fvg_bull_btm'] # Stop loss below the gap
+        tp = ph # Target HTF High
+        entry = curr['close']
+        
+        if (entry - sl) > 0:
+            rr = (tp - entry) / (entry - sl)
+            if rr >= MIN_RR:
+                size = st.session_state.equity * RISK_PCT / (entry - sl)
+                signal = {
+                    "dir": "BULLISH", "entry": entry, "sl": sl, 
+                    "tp": tp, "rr": rr, "size": size, "desc": f"{kz} + FVG Create"
+                }
 
-        elif sweep_h and rej_s and p < self.ema200[-1] and mss_s and fvg_s and ob_s and vol_spike:
-            sl = h * (1 + self.sl_buffer_pct / 100)
-            tp2 = self.swing_l.ffill().iloc[-1] if len(self.swing_l.ffill()) else pl
-            rr = (p - tp2) / (sl - p)
-            if rr >= self.min_rr:
-                size = st.session_state.equity * 0.01 / (sl - p)
-                self.sell(sl=sl, tp=pmid, size=size)
-                log_trade("BEARISH", p, sl, pmid, tp2, rr, size)
+    # SHORT SETUP
+    if bear_trend and vol_spike and created_bear_fvg:
+        sl = curr['fvg_bear_top'] # Stop loss above the gap
+        tp = pl # Target HTF Low
+        entry = curr['close']
+        
+        if (sl - entry) > 0:
+            rr = (entry - tp) / (sl - entry)
+            if rr >= MIN_RR:
+                size = st.session_state.equity * RISK_PCT / (sl - entry)
+                signal = {
+                    "dir": "BEARISH", "entry": entry, "sl": sl, 
+                    "tp": tp, "rr": rr, "size": size, "desc": f"{kz} + FVG Create"
+                }
+    
+    # Update processed timestamp
+    st.session_state.last_processed_ts[symbol] = curr.name
+    return signal
 
-# ============================= LOGGING =============================
-def log_trade(dir, entry, sl, tp1, tp2, rr, size):
-    st.session_state.equity += size * 500  # Simulated profit
+def log_trade(symbol, sig):
+    """Logs the trade, updates equity, and sends alert"""
+    
     trade = {
         "time": datetime.now().isoformat(),
-        "direction": dir,
-        "entry": round(entry, 2),
-        "sl": round(sl, 2),
-        "tp1": round(tp1, 2),
-        "tp2": round(tp2, 2),
-        "rr": round(rr, 1),
-        "size": round(size, 4),
-        "equity": round(st.session_state.equity, 0)
+        "symbol": symbol,
+        "direction": sig['dir'],
+        "entry": round(sig['entry'], 2),
+        "sl": round(sig['sl'], 2),
+        "tp": round(sig['tp'], 2),
+        "rr": round(sig['rr'], 2),
+        "size": round(sig['size'], 4),
+        "desc": sig['desc']
     }
+    
+    # 1. Save to JSON
     with open(TRADE_LOG, "r+") as f:
-        trades = json.load(f)
+        try:
+            trades = json.load(f)
+        except:
+            trades = []
         trades.append(trade)
         f.seek(0); f.truncate(); json.dump(trades, f, indent=2)
+    
+    # 2. Update Equity Log
     with open(EQUITY_LOG, "a") as f:
         f.write(f"{datetime.now().isoformat()},{st.session_state.equity:.0f},{len(trades)}\n")
+    
+    # 3. Send Telegram Alert
+    msg = (
+        f"🚨 *{sig['dir']} SIGNAL DETECTED* 🚨\n"
+        f"Symbol: *{symbol}*\n"
+        f"Entry: {sig['entry']}\n"
+        f"SL: {sig['sl']} | TP: {sig['tp']}\n"
+        f"R:R: {sig['rr']:.2f}\n"
+        f"Reason: {sig['desc']}"
+    )
+    send_telegram_alert(msg)
+        
+    return trade
 
 # ============================= DASHBOARD =============================
-st.title("🚀 UltimateCRT Trading Bot")
-st.markdown("**Live on XT.com • Full ICT/SMC Confluence • Kill Zones Only**")
+st.title("🚀 UltimateCRT Bot - Live Monitor")
+st.markdown(f"**Status:** {'🟢 RUNNING' if st.session_state.running else '🔴 STOPPED'} | **Telegram:** {'✅ ON' if ENABLE_TELEGRAM else '❌ OFF'}")
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Equity", f"${st.session_state.equity:,.0f}", delta="+$5,230")
-c2.metric("Total Trades", len(json.load(open(TRADE_LOG))) if os.path.getsize(TRADE_LOG) else 0)
-c3.metric("Risk/Trade", "1%")
-c4.metric("Status", "LIVE" if st.session_state.running else "IDLE")
-
-if st.button("▶ Start Live Monitoring" if not st.session_state.running else "⏹ Stop Monitoring", type="primary"):
+# Control Panel
+if st.button("▶ Start / ⏹ Stop", type="primary"):
     st.session_state.running = not st.session_state.running
     st.rerun()
 
+# Metrics
+try:
+    with open(TRADE_LOG, 'r') as f:
+        trade_history = json.load(f)
+        count = len(trade_history)
+except:
+    count = 0
+    trade_history = []
+
+m1, m2, m3 = st.columns(3)
+m1.metric("Account Balance", f"${st.session_state.equity:,.2f}")
+m2.metric("Signals Generated", count)
+m3.metric("Active Killzone", check_killzone(datetime.now()) or "None")
+
+# Main Execution Loop
 if st.session_state.running:
-    ph = st.empty()
-    while st.session_state.running:
-        with ph.container():
-            for sym in SYMBOLS:
-                df = fetch_klines(sym)
-                if len(df) >= 200:
-                    UltimateCRT(data=df).run()
-                    st.success(f"{sym} | Price: ${df['close'].iloc[-1]:.2f}")
-        time.sleep(60)
-        st.rerun()
+    status_container = st.container()
+    
+    with status_container:
+        st.write("---")
+        cols = st.columns(len(SYMBOLS))
+        
+        for idx, sym in enumerate(SYMBOLS):
+            # 1. Fetch
+            df = fetch_klines(sym)
+            
+            if not df.empty and len(df) > 200:
+                # 2. Calculate
+                df = calculate_indicators(df)
+                
+                # 3. Analyze
+                sig = analyze_market(df, sym)
+                
+                # 4. Log if signal found
+                if sig:
+                    t = log_trade(sym, sig)
+                    st.toast(f"🚀 SIGNAL: {sym} {sig['dir']}")
+                
+                # Display current status
+                curr = df.iloc[-1]
+                # Check if current price is inside previous candle's FVG
+                prev = df.iloc[-2]
+                in_bull_fvg = prev['is_bull_fvg'] and (prev['fvg_bull_btm'] <= curr['close'] <= prev['fvg_bull_top'])
+                in_bear_fvg = prev['is_bear_fvg'] and (prev['fvg_bear_top'] <= curr['close'] <= prev['fvg_bear_btm'])
+                
+                status_fvg = "No FVG"
+                if in_bull_fvg: status_fvg = "Inside BULL FVG"
+                elif in_bear_fvg: status_fvg = "Inside BEAR FVG"
 
-# Equity Curve
-if os.path.exists(EQUITY_LOG) and os.path.getsize(EQUITY_LOG) > 50:
-    eq = pd.read_csv(EQUITY_LOG)
-    eq['timestamp'] = pd.to_datetime(eq['timestamp'])
-    fig = px.line(eq, x="timestamp", y="equity", title="Live Equity Curve")
-    st.plotly_chart(fig, use_container_width=True)
+                trend_color = "green" if curr['close'] > curr['ema200'] else "red"
+                
+                cols[idx].metric(label=sym, value=f"${curr['close']:,.2f}", delta_color="off")
+                cols[idx].caption(f"Trend: :{trend_color}[{'BULL' if trend_color=='green' else 'BEAR'}]")
+                if "Inside" in status_fvg:
+                     cols[idx].warning(f"⚠️ {status_fvg}")
+                else:
+                     cols[idx].info(f"Structure: {status_fvg}")
+            
+            else:
+                cols[idx].warning("Loading...")
 
-# Recent Trades
-if os.path.exists(TRADE_LOG) and os.path.getsize(TRADE_LOG):
-    trades = pd.DataFrame(json.load(open(TRADE_LOG)))
-    if not trades.empty:
-        st.subheader("Recent Signals")
-        show = trades[['time', 'direction', 'entry', 'rr', 'equity']].copy()
-        show['time'] = pd.to_datetime(show['time']).dt.strftime('%H:%M:%S')
-        st.dataframe(show.tail(10), use_container_width=True)
+    # Auto-refresh logic
+    time.sleep(10)
+    st.rerun()
 
-st.sidebar.header("About UltimateCRT")
-st.sidebar.info("9+ Confluences: Parent Range • Liquidity Sweep • FVG • Order Block • MSS • Volume Spike • Kill Zones • Min 1:2 RR • Next Liquidity Targets")
-st.sidebar.caption("Data: XT.com • Updated December 30, 2025")
+# Reporting Section
+st.write("---")
+st.subheader("Signal History")
+if count > 0:
+    hist_df = pd.DataFrame(trade_history)
+    hist_df['time'] = pd.to_datetime(hist_df['time']).dt.strftime('%Y-%m-%d %H:%M')
+    st.dataframe(hist_df.sort_index(ascending=False), use_container_width=True)
+
+    if os.path.exists(EQUITY_LOG):
+        eq_df = pd.read_csv(EQUITY_LOG)
+        if not eq_df.empty:
+            fig = px.line(eq_df, x="timestamp", y="equity", title="Account Growth")
+            st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("No signals generated yet.")
