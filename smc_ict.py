@@ -12,7 +12,7 @@ from backtesting.lib import resample_apply
 
 # ============================= CONFIGURATION =============================
 # Replace with your actual Discord Webhook URL
-DISCORD_WEBHOOK_URL = "YOUR_DISCORD_WEBHOOK_HERE"
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1462477426742526046/5_whm9yXa_B2OkgHatIXz7a9Eu5J0Se9J1Szji6rL-SKD9XgWRu246suhSvWRIP0rw3R"
 
 BASE_URL = "https://sapi.xt.com/v4/public/kline"
 SYMBOLS = ["BTC_USDT", "ETH_USDT", "SOL_USDT", "BNB_USDT"]
