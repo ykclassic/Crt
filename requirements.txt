@@ -18,3 +18,7 @@ streamlit-autorefresh
 shap
 lifelines
 pandas-ta
+anthropic
+groq
+mistralai
+openai
