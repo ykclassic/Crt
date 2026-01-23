@@ -3,12 +3,14 @@ import pandas as pd
 import sqlite3
 import json
 import os
+import pickle
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Nexus Intelligence Suite", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Nexus Intelligence Suite", layout="wide", page_icon="🧠")
 
 DB_FILES = {
     "Core Engine": "nexus_core.db",
@@ -17,8 +19,9 @@ DB_FILES = {
     "AI Predict": "nexus_ai.db"
 }
 PERFORMANCE_FILE = "performance.json"
+MODEL_FILE = "nexus_brain.pkl"
 
-# --- DATA LOADING ---
+# --- DATA UTILITIES ---
 def load_performance():
     if os.path.exists(PERFORMANCE_FILE):
         with open(PERFORMANCE_FILE, "r") as f:
@@ -30,97 +33,102 @@ def load_signals(db_path):
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(db_path)
-        df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 100", conn)
+        df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 50", conn)
         conn.close()
         return df
-    except Exception as e:
-        st.error(f"Error loading {db_path}: {e}")
+    except:
         return pd.DataFrame()
 
-# --- HEADER ---
-st.title("🛡️ Nexus Intelligence Command Center")
-st.markdown(f"**Last Sync:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-st.divider()
+# --- HEADER & KEY METRICS ---
+st.title("🛡️ Nexus Intelligence Suite: Visual Command")
+st.markdown(f"**System Status:** Deep Network Active | **Last Sync:** {datetime.now().strftime('%H:%M:%S')}")
 
-# --- TOP ROW: PERFORMANCE METRICS ---
 perf_data = load_performance()
-cols = st.columns(len(DB_FILES))
+m_cols = st.columns(len(DB_FILES))
 
 for i, (name, db_file) in enumerate(DB_FILES.items()):
-    strategy_id = db_file.replace(".db", "")
-    data = perf_data.get(strategy_id, {"win_rate": 0, "status": "OFFLINE"})
+    strat_id = db_file.replace(".db", "")
+    stats = perf_data.get(strat_id, {"win_rate": 50.0, "status": "LIVE"})
     
-    with cols[i]:
-        color = "normal" if data['status'] == "LIVE" else "inverse"
-        st.metric(label=name, value=f"{data['win_rate']}%", delta=data['status'], delta_color=color)
-        if data['status'] == "RECOVERY":
-            st.warning("⚠️ In Recovery Mode")
+    with m_cols[i]:
+        # Visual cues for Recovery Mode
+        delta_val = "✅ LIVE" if stats['status'] == "LIVE" else "⚠️ RECOVERY"
+        st.metric(label=name, value=f"{stats['win_rate']}%", delta=delta_val, 
+                  delta_color="normal" if stats['status'] == "LIVE" else "inverse")
 
-# --- MIDDLE ROW: VISUAL ANALYSIS ---
-st.subheader("📊 Strategy Insights")
-col_left, col_right = st.columns([2, 1])
-
-all_signals = []
-for name, db in DB_FILES.items():
-    df = load_signals(db)
-    if not df.empty:
-        df['engine'] = name
-        all_signals.append(df)
-
-if all_signals:
-    master_df = pd.concat(all_signals)
-    
-    with col_left:
-        # Confidence vs Time Scatter
-        fig = px.scatter(master_df, x="ts", y="conf" if "conf" in master_df.columns else "confidence", 
-                         color="engine", title="Signal Conviction Over Time",
-                         hover_data=["asset", "signal"])
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col_right:
-        # Distribution of Signals
-        fig2 = px.pie(master_df, names='signal', title="Directional Bias", hole=0.4)
-        st.plotly_chart(fig2, use_container_width=True)
-
-# --- BOTTOM ROW: LIVE SIGNAL FEED ---
-st.subheader("📡 Live Signal Feed (Consolidated)")
-if all_signals:
-    # Clean up column names for display
-    display_df = master_df.copy()
-    if "conf" in display_df.columns and "confidence" in display_df.columns:
-        display_df["confidence"] = display_df["confidence"].fillna(display_df["conf"])
-    
-    # Sort by timestamp
-    display_df = display_df.sort_values(by="ts", ascending=False)
-    
-    st.dataframe(
-        display_df[["ts", "engine", "asset", "signal", "entry", "sl", "tp"]].head(20),
-        use_container_width=True,
-        hide_index=True
-    )
-
-# --- DEEP ANALYSIS: BOLLINGER BANDS VIEW ---
 st.divider()
-st.subheader("🔍 Engine Deep Dive: Rangemaster")
-range_df = load_signals("rangemaster.db")
-if not range_df.empty:
-    fig3 = go.Figure()
-    fig3.add_trace(go.Scatter(x=range_df['ts'], y=range_df['entry'], mode='markers', name='Entry Price',
-                             marker=dict(color=range_df['signal'].map({'LONG': 'green', 'SHORT': 'red'}), size=10)))
-    fig3.update_layout(title="Rangemaster Executions", xaxis_title="Timestamp", yaxis_title="Price")
-    st.plotly_chart(fig3, use_container_width=True)
-else:
-    st.info("No Rangemaster data available yet.")
 
-# --- SIDEBAR CONTROLS ---
-st.sidebar.header("Settings")
-if st.sidebar.button("🔄 Force Refresh Data"):
+# --- NEURAL NETWORK TESTER (MANUAL SIMULATOR) ---
+st.subheader("🧠 Neural Network Simulator (Deep AI Gatekeeper)")
+st.info("Manually input market features below to see what the AI predicts. This tests the Deep Network's decision logic.")
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    test_rsi = st.slider("Current RSI", 0.0, 100.0, 50.0)
+with col2:
+    test_vol = st.number_input("Volume % Change (last 1h)", value=0.0, step=0.1)
+with col3:
+    test_dist = st.slider("Distance from EMA20 (%)", -10.0, 10.0, 0.0)
+
+if st.button("🔮 Run AI Prediction"):
+    if os.path.exists(MODEL_FILE):
+        try:
+            with open(MODEL_FILE, "rb") as f:
+                model, scaler = pickle.load(f)
+            
+            # Prepare data for model
+            features = np.array([[test_rsi, test_vol, test_dist]])
+            features_scaled = scaler.transform(features)
+            
+            # Predict
+            prob = model.predict_proba(features_scaled)[0][1]
+            prediction = "BULLISH" if prob > 0.5 else "BEARISH"
+            conf = round(prob * 100, 2)
+            
+            # Visual Result
+            res_col, meter_col = st.columns([1, 2])
+            with res_col:
+                st.write(f"### Result: **{prediction}**")
+                st.write(f"Confidence: **{conf}%**")
+            with meter_col:
+                st.progress(prob)
+        except Exception as e:
+            st.error(f"Prediction Error: {e}")
+    else:
+        st.error("Model file (nexus_brain.pkl) not found. Run `train_ai.py` first to create the Deep Network.")
+
+st.divider()
+
+# --- ANALYTICS & LIVE FEED ---
+tab1, tab2 = st.tabs(["📊 Analytics", "📡 Live Signal Feed"])
+
+with tab1:
+    all_data = []
+    for name, db in DB_FILES.items():
+        df = load_signals(db)
+        if not df.empty:
+            df['Engine'] = name
+            all_data.append(df)
+    
+    if all_data:
+        master_df = pd.concat(all_data)
+        fig = px.line(master_df, x="ts", y="entry", color="Engine", title="Entry Price Trends by Engine")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.write("No signal history found in databases.")
+
+with tab2:
+    if all_data:
+        st.dataframe(master_df.sort_values("ts", ascending=False), use_container_width=True)
+
+# --- SIDEBAR: RECOVERY DASHBOARD ---
+st.sidebar.title("🛠️ System Control")
+st.sidebar.write("### Strategy Health")
+for strat_id, stats in perf_data.items():
+    if stats['status'] == "RECOVERY":
+        st.sidebar.error(f"{strat_id}: IN RECOVERY")
+    else:
+        st.sidebar.success(f"{strat_id}: HEALTHY")
+
+if st.sidebar.button("🔄 Refresh Data"):
     st.rerun()
-
-st.sidebar.markdown("""
----
-### System Status
-- **GitHub Actions:** Active
-- **Database:** SQLite (Persistent)
-- **Neural Network:** MLP Fallback Active
-""")
