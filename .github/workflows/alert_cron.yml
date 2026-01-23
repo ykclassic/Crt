@@ -29,10 +29,16 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
+          # 1. THE TEACHER: Audit previous trades and update performance.json
+          python audit_intelligence.py || echo "Audit Skip"
+          
+          # 2. THE STUDENTS: Run strategy engines (they now read performance.json)
           python run_alerts.py || echo "Core Skip"
           python run_alerts1.py || echo "Hybrid Skip"
           python run_alerts2.py || echo "Range Skip"
           python run_alerts3.py || echo "AI Skip"
+          
+          # 3. THE JUDGE: Aggregate high-conviction signals
           python run_consensus.py || echo "Consensus Skip"
 
       - name: Persist Intelligence Data
@@ -40,17 +46,14 @@ jobs:
           git config --global user.name "nexus-intelligence-bot"
           git config --global user.email "bot@nexus-ai.local"
           
-          # 1. Add changes to the staging area first
-          git add *.db sent_alerts.json
+          # Add DBs and the new Learning File
+          git add *.db sent_alerts.json performance.json
           
-          # 2. Pull using rebase AND autostash to handle the modified files
-          # This prevents the "unstaged changes" error (Exit code 128)
           git pull --rebase --autostash origin main
           
-          # 3. Check if there are changes to commit
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "Intelligence Update: $(date)"
+            git commit -m "Intelligence Update: $(date) [Learning Synchronized]"
             git push origin main
           fi
