@@ -4,6 +4,7 @@ import os
 import requests
 import sqlite3
 import json
+import sys
 from datetime import datetime
 
 # --- CONFIGURATION ---
@@ -12,60 +13,73 @@ APP_NAME = "NEXUS HYBRID V1"
 EXCHANGE_NAME = "XT" 
 DB_FILE = "hybrid_v1.db"
 PERFORMANCE_FILE = "performance.json"
+STRATEGY_ID = "hybrid_v1"
 
 def notify(msg):
     if WEBHOOK: requests.post(WEBHOOK, json={"content": f"**[{APP_NAME}]**\n{msg}"})
-
-def get_exchange(name):
-    name = name.upper()
-    if name == "XT": return ccxt.xt({"enableRateLimit": True})
-    elif name == "GATE": return ccxt.gateio({"enableRateLimit": True})
-    elif name == "BITGET": return ccxt.bitget({"enableRateLimit": True})
-    else: raise ValueError(f"Unknown exchange: {name}")
 
 def get_learned_confidence():
     try:
         if os.path.exists(PERFORMANCE_FILE):
             with open(PERFORMANCE_FILE, "r") as f:
                 data = json.load(f)
-                stats = data.get("hybrid_v1", {"win_rate": 50.0})
+                stats = data.get(STRATEGY_ID, {"win_rate": 50.0, "status": "LIVE", "sample_size": 0})
+                if stats.get("status") == "RECOVERY" or (stats.get("sample_size", 0) > 5 and stats["win_rate"] < 40.0):
+                    print(f"🛑 {STRATEGY_ID} is in RECOVERY/KILLED mode. Skipping alerts.")
+                    return None
                 return stats["win_rate"]
     except: pass
     return 50.0
 
 def run_hybrid():
-    ex = get_exchange(EXCHANGE_NAME)
-    ex.load_markets()
-
+    ex = ccxt.xt({"enableRateLimit": True})
+    
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY, asset TEXT, signal TEXT, entry REAL, sl REAL, tp REAL, conf REAL, ts TEXT)")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset TEXT, signal TEXT, entry REAL, sl REAL, tp REAL, 
+            confidence REAL, reason TEXT, ts TEXT
+        )
+    """)
     conn.commit()
 
-    current_win_rate = get_learned_confidence()
+    current_conf = get_learned_confidence()
+    if current_conf is None: return
 
-    for asset in ["SOL/USDT", "BTC/USDT"]:
+    for asset in ["SOL/USDT", "BTC/USDT", "ETH/USDT"]:
         try:
             data = ex.fetch_ohlcv(asset, '1h', limit=50)
             df = pd.DataFrame(data, columns=['ts','o','h','l','c','v'])
-
-            df['hl2'] = (df['h'] + df['l']) / 2
-            last_price = df['c'].iloc[-1]
             
-            # Use learned win rate as confidence
-            conf = current_win_rate
+            df['sma50'] = df['c'].rolling(50).mean()
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+            
+            signal = None
+            reason = "NONE"
 
-            signal = "LONG" if last_price > df['hl2'].mean() else "SHORT"
-            sl = last_price * (0.97 if signal == "LONG" else 1.03)
-            tp = last_price * (1.06 if signal == "LONG" else 0.94)
+            if last['c'] > last['sma50'] and prev['c'] <= prev['sma50']:
+                signal = "LONG"; reason = "TREND BREAKOUT"
+            elif last['c'] < last['sma50'] and prev['c'] >= prev['sma50']:
+                signal = "SHORT"; reason = "TREND BREAKDOWN"
+            elif last['c'] > last['sma50']:
+                signal = "LONG"; reason = "BULLISH MOMENTUM"
+            else:
+                signal = "SHORT"; reason = "BEARISH MOMENTUM"
 
-            cursor.execute("INSERT INTO signals (asset, signal, entry, sl, tp, conf, ts) VALUES (?,?,?,?,?,?,?)",
-                           (asset, signal, last_price, sl, tp, conf, datetime.now().isoformat()))
+            entry = last['c']
+            sl = entry * (0.97 if signal == "LONG" else 1.03)
+            tp = entry * (1.06 if signal == "LONG" else 0.94)
+
+            cursor.execute("""
+                INSERT INTO signals (asset, signal, entry, sl, tp, confidence, reason, ts) 
+                VALUES (?,?,?,?,?,?,?,?)""",
+                (asset, signal, entry, sl, tp, current_conf, reason, datetime.now().isoformat()))
             conn.commit()
             
-            emoji = "🔄"
-            status = "⭐ PROVEN" if conf > 55 else "🧪 TESTING"
-            notify(f"{emoji} **Hybrid Alert** ({status})\nAsset: {asset}\nSignal: {signal}\n**Confidence: {conf}%**\n---\nEntry: {last_price:.2f}\nSL: {sl:.2f}\nTP: {tp:.2f}")
+            notify(f"🔄 **Hybrid Alert**\nAsset: {asset}\nSignal: {signal}\n**Confidence: {current_conf}%** (📊 {reason})\n---\nEntry: {entry:.2f}\nSL: {sl:.2f} | TP: {tp:.2f}")
         except Exception as e: 
             print(f"Error: {e}")
             
