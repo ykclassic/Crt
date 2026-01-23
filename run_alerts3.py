@@ -5,79 +5,81 @@ import os
 import requests
 import sqlite3
 import json
+import pickle
 from datetime import datetime
 
 # --- CONFIGURATION ---
 WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL")
 APP_NAME = "NEXUS AI PREDICT"
-EXCHANGE_NAME = "XT" 
 DB_FILE = "nexus_ai.db"
+MODEL_FILE = "nexus_brain.pkl"
 PERFORMANCE_FILE = "performance.json"
-ASSETS = ["BTC/USDT", "ETH/USDT"]
+STRATEGY_ID = "nexus_ai"
 
 def notify(msg):
     if WEBHOOK: requests.post(WEBHOOK, json={"content": f"**[{APP_NAME}]**\n{msg}"})
 
-def get_exchange(name):
-    name = name.upper()
-    if name == "XT": return ccxt.xt({"enableRateLimit": True})
-    elif name == "GATE": return ccxt.gateio({"enableRateLimit": True})
-    elif name == "BITGET": return ccxt.bitget({"enableRateLimit": True})
-    else: raise ValueError(f"Unknown exchange: {name}")
-
-def get_historical_winrate():
+def get_ai_prediction(rsi, price, ema):
     try:
-        if os.path.exists(PERFORMANCE_FILE):
-            with open(PERFORMANCE_FILE, "r") as f:
-                data = json.load(f)
-                stats = data.get("nexus_ai", {"win_rate": 50.0})
-                return stats["win_rate"]
-    except: pass
-    return 50.0
+        if not os.path.exists(MODEL_FILE): return None
+        with open(MODEL_FILE, "rb") as f:
+            model, scaler = pickle.load(f)
+        dist_ema = (price - ema) / price
+        feat = np.array([[rsi, 0.0, dist_ema]]) # vol_change set to 0 for simplicity
+        feat_scaled = scaler.transform(feat)
+        return round(model.predict_proba(feat_scaled)[0][1] * 100, 2)
+    except: return None
 
 def run_ai_logic():
-    ex = get_exchange(EXCHANGE_NAME)
-    ex.load_markets()
-
+    ex = ccxt.xt({"enableRateLimit": True})
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY, asset TEXT, signal TEXT, entry REAL, sl REAL, tp REAL, conf REAL, ts TEXT)")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset TEXT, signal TEXT, entry REAL, sl REAL, tp REAL, 
+            confidence REAL, reason TEXT, ts TEXT
+        )
+    """)
     conn.commit()
 
-    hist_wr = get_historical_winrate()
+    # Learning Check
+    if os.path.exists(PERFORMANCE_FILE):
+        with open(PERFORMANCE_FILE, "r") as f:
+            perf = json.load(f).get(STRATEGY_ID, {"status": "LIVE"})
+            if perf["status"] == "RECOVERY": return
 
-    for asset in ASSETS:
+    for asset in ["BTC/USDT", "ETH/USDT"]:
         try:
             data = ex.fetch_ohlcv(asset, '1h', limit=100)
             df = pd.DataFrame(data, columns=['ts','o','h','l','c','v'])
-
+            df['ema20'] = df['c'].rolling(20).mean()
+            
+            # RSI
             delta = df['c'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-            df['rsi'] = 100 - (100 / (1 + (gain/loss)))
+            up, down = delta.clip(lower=0), -delta.clip(upper=0)
+            df['rsi'] = 100 - (100 / (1 + up.rolling(14).mean() / down.rolling(14).mean()))
             
-            rsi = df['rsi'].iloc[-1]
-            price = df['c'].iloc[-1]
-            signal = "LONG" if rsi > 50 else "SHORT"
+            last = df.iloc[-1]
+            ai_conf = get_ai_prediction(last['rsi'], last['c'], last['ema20'])
             
-            # --- WEIGHTED AI CONFIDENCE ---
-            # 1. Math Probability (How extreme is the RSI?)
-            math_prob = 50 + (abs(rsi - 50) / 50.0) * 49.0
-            # 2. Hybrid Score: (Current Math + Historical Performance) / 2
-            conf_score = round((math_prob + hist_wr) / 2, 2)
-
+            reason = "DEEP NETWORK" if ai_conf else "HEURISTIC FALLBACK"
+            final_conf = ai_conf if ai_conf else 52.0
+            signal = "LONG" if final_conf > 50 else "SHORT"
+            
+            price = last['c']
             sl = price * (0.98 if signal == "LONG" else 1.02)
             tp = price * (1.04 if signal == "LONG" else 0.96)
 
-            cursor.execute("INSERT INTO signals (asset, signal, entry, sl, tp, conf, ts) VALUES (?,?,?,?,?,?,?)",
-                           (asset, signal, price, sl, tp, conf_score, datetime.now().isoformat()))
+            cursor.execute("""
+                INSERT INTO signals (asset, signal, entry, sl, tp, confidence, reason, ts) 
+                VALUES (?,?,?,?,?,?,?,?)""",
+                (asset, signal, price, sl, tp, final_conf, reason, datetime.now().isoformat()))
             conn.commit()
             
-            notify(f"🤖 **AI Analysis**\nAsset: {asset}\nSignal: {signal}\n**Confidence: {conf_score}%**\n*(Hist: {hist_wr}% | Math: {math_prob:.1f}%)*")
-            
+            notify(f"🤖 **AI Prediction**\nAsset: {asset}\nSignal: {signal}\n**Confidence: {final_conf}%** (📊 {reason})")
         except Exception as e:
             print(f"Error: {e}")
-
     conn.close()
 
 if __name__ == "__main__":
