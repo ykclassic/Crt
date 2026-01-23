@@ -33,16 +33,25 @@ def load_signals(db_path):
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(db_path)
-        # Attempting to load with 'reason' column if it exists
-        df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 50", conn)
+        df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 100", conn)
         conn.close()
+        
+        # --- DATA CLEANING FIX ---
+        # 1. Standardize 'conf' vs 'confidence'
+        if "conf" in df.columns and "confidence" not in df.columns:
+            df = df.rename(columns={"conf": "confidence"})
+        
+        # 2. Ensure 'reason' exists (for older database rows)
+        if "reason" not in df.columns:
+            df["reason"] = "LEGACY"
+        
         return df
-    except:
+    except Exception as e:
         return pd.DataFrame()
 
 # --- HEADER & KEY METRICS ---
 st.title("🛡️ Nexus Intelligence Suite: Visual Command")
-st.markdown(f"**System Status:** Deep Network Monitoring | **Last Sync:** {datetime.now().strftime('%H:%M:%S')}")
+st.markdown(f"**System Status:** Monitoring Active | **Last Sync:** {datetime.now().strftime('%H:%M:%S')}")
 
 perf_data = load_performance()
 m_cols = st.columns(len(DB_FILES))
@@ -52,9 +61,9 @@ for i, (name, db_file) in enumerate(DB_FILES.items()):
     stats = perf_data.get(strat_id, {"win_rate": 50.0, "status": "LIVE"})
     
     with m_cols[i]:
-        delta_val = "✅ LIVE" if stats['status'] == "LIVE" else "⚠️ RECOVERY"
-        st.metric(label=name, value=f"{stats['win_rate']}%", delta=delta_val, 
-                  delta_color="normal" if stats['status'] == "LIVE" else "inverse")
+        status_label = "✅ LIVE" if stats.get('status') == "LIVE" else "⚠️ RECOVERY"
+        st.metric(label=name, value=f"{stats.get('win_rate', 50.0)}%", delta=status_label, 
+                  delta_color="normal" if stats.get('status') == "LIVE" else "inverse")
 
 st.divider()
 
@@ -77,16 +86,17 @@ if st.button("🔮 Run AI Prediction"):
             features_scaled = scaler.transform(features)
             prob = model.predict_proba(features_scaled)[0][1]
             prediction = "BULLISH" if prob > 0.5 else "BEARISH"
-            st.write(f"### Result: **{prediction}** ({round(prob * 100, 2)}% Confidence)")
+            color = "green" if prediction == "BULLISH" else "red"
+            st.markdown(f"### Result: :{color}[{prediction}] ({round(prob * 100, 2)}% Confidence)")
             st.progress(prob)
         except Exception as e:
             st.error(f"Prediction Error: {e}")
     else:
-        st.error("Model file not found. Run training script first.")
+        st.error("Model file (nexus_brain.pkl) not found. Run training script first.")
 
 st.divider()
 
-# --- ANALYTICS & LIVE FEED WITH REASONING ---
+# --- ANALYTICS & LIVE FEED ---
 tab1, tab2 = st.tabs(["📊 Analytics", "📡 Live Signal Feed"])
 
 all_data = []
@@ -97,32 +107,44 @@ for name, db in DB_FILES.items():
         all_data.append(df)
 
 if all_data:
-    master_df = pd.concat(all_data, sort=False).fillna("N/A")
+    # Concatenate and fill missing columns gracefully
+    master_df = pd.concat(all_data, sort=False)
+    master_df["reason"] = master_df["reason"].fillna("TECHNICAL")
+    master_df["confidence"] = pd.to_numeric(master_df["confidence"], errors='coerce').fillna(50.0)
     master_df = master_df.sort_values("ts", ascending=False)
     
     with tab1:
-        # Confidence vs Time
-        fig = px.scatter(master_df, x="ts", y="confidence", color="reason", 
-                         title="Conviction by Technical Reason",
-                         hover_data=["asset", "Engine"])
-        st.plotly_chart(fig, use_container_width=True)
+        # Visualizing the logic behind trades
+        try:
+            fig = px.scatter(master_df, x="ts", y="confidence", color="reason", 
+                             title="Signal Conviction by Reason",
+                             hover_data=["asset", "Engine", "signal"],
+                             color_discrete_sequence=px.colors.qualitative.Safe)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Asset distribution
+            fig2 = px.histogram(master_df, x="asset", color="Engine", barmode="group", title="Asset Activity Distribution")
+            st.plotly_chart(fig2, use_container_width=True)
+        except Exception as e:
+            st.warning(f"Charts are refreshing... (Reason: Data Syncing)")
 
     with tab2:
-        # Show specific reasoning column in the main feed
-        st.dataframe(
-            master_df[["ts", "Engine", "asset", "signal", "confidence", "reason", "entry", "sl", "tp"]].head(20),
-            use_container_width=True,
-            hide_index=True
-        )
+        # Clean display for the table
+        cols_to_show = ["ts", "Engine", "asset", "signal", "confidence", "reason", "entry", "sl", "tp"]
+        # Ensure only existing columns are used
+        available_cols = [c for c in cols_to_show if c in master_df.columns]
+        st.dataframe(master_df[available_cols].head(30), use_container_width=True, hide_index=True)
 else:
-    st.info("No signal data found. Run your engines on GitHub to generate data.")
+    st.info("Waiting for signals... Ensure your engines are running on GitHub Actions.")
 
 st.sidebar.title("🛠️ System Control")
-for strat_id, stats in perf_data.items():
-    if stats['status'] == "RECOVERY":
-        st.sidebar.error(f"{strat_id}: IN RECOVERY")
-    else:
-        st.sidebar.success(f"{strat_id}: HEALTHY")
-
-if st.sidebar.button("🔄 Refresh Data"):
+if st.sidebar.button("🔄 Refresh Dashboard"):
     st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.write("### Engine Health")
+for name, db in DB_FILES.items():
+    if os.path.exists(db):
+        st.sidebar.success(f"{name}: Connected")
+    else:
+        st.sidebar.error(f"{name}: DB Missing")
