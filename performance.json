@@ -1,1 +1,17 @@
-{}
+{
+    "nexus_core": {
+        "win_rate": 50.0,
+        "status": "LIVE",
+        "last_audit": "2026-01-23T13:08:57.951897"
+    },
+    "hybrid_v1": {
+        "win_rate": 50.0,
+        "status": "LIVE",
+        "last_audit": "2026-01-23T13:08:57.952711"
+    },
+    "nexus_ai": {
+        "win_rate": 50.0,
+        "status": "LIVE",
+        "last_audit": "2026-01-23T13:08:57.955191"
+    }
+}
