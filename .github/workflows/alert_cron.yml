@@ -1,19 +1,69 @@
+name: Nexus Intelligence Suite
+
+on:
+  schedule:
+    - cron: '0 * * * *' # Runs every hour
+  workflow_dispatch:   # Allows manual trigger
+
+# --- PERMISSIONS FIX ---
+# This ensures the GITHUB_TOKEN has the right to push code back to your repo
+permissions:
+  contents: write
+
+jobs:
+  intelligence-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetches all history so rebase works correctly
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install ccxt pandas numpy requests scikit-learn plotly streamlit
+
+      - name: Execute Intelligence Engines
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          # The Teacher: Updates performance.json
+          python audit_intelligence.py || echo "Audit Step Skipped"
+          
+          # The Students: Run alerts (Kill-switch enabled)
+          python run_alerts.py || echo "Core Engine Skip"
+          python run_alerts1.py || echo "Hybrid Engine Skip"
+          python run_alerts2.py || echo "Range Engine Skip"
+          python run_alerts3.py || echo "AI Engine Skip"
+          
+          # The Judge: Final consensus
+          python run_consensus.py || echo "Consensus Engine Skip"
+
       - name: Persist Intelligence Data
         run: |
+          # Identify as the GitHub Actions Bot
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 1. Use --ignore-unmatch to prevent errors if a file is missing
-          # 2. Use 'git add .' to safely catch any new .db or .json files
-          git add *.db sent_alerts.json performance.json || echo "Some files missing, skipping specific add..."
+          # GRACEFUL ADD: Only add files that actually exist to avoid 'pathspec' error
+          for file in *.db sent_alerts.json performance.json; do
+            if [ -f "$file" ]; then
+              git add "$file"
+            fi
+          done
           
-          # Autostash handles the local changes while pulling updates from main
+          # REBASE & AUTOSTASH: Pulls latest changes without overwriting local DB updates
           git pull --rebase --autostash origin main
           
-          # Only commit if there are actual changes in the staging area
-          if [ -n "$(git status --portion)" ]; then
-            git commit -m "Intelligence Sync: $(date)"
+          # COMMIT & PUSH: Only if there are actual changes detected
+          if ! git diff --cached --quiet; then
+            git commit -m "Intelligence Sync: $(date +'%Y-%m-%d %H:%M:%S')"
             git push origin main
           else
-            echo "No changes detected to commit."
+            echo "No intelligence updates to persist this run."
           fi
