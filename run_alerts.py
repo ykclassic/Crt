@@ -6,6 +6,7 @@ import sqlite3
 import requests
 import time
 import json
+import sys
 from datetime import datetime
 
 # --- CONFIGURATION ---
@@ -17,6 +18,7 @@ RR_RATIO = 1.5
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 DB_FILE = "nexus_core.db"
 PERFORMANCE_FILE = "performance.json"
+STRATEGY_ID = "nexus_core"
 APP_NAME = "NEXUS CORE"
 
 def notify(msg):
@@ -31,17 +33,22 @@ def get_exchange(name):
     else: raise ValueError(f"Unknown exchange: {name}")
 
 def get_learned_confidence():
-    """Reads the audit file to get the real win rate."""
+    """Returns win rate or EXITS if performance is too low (Kill Switch)."""
     try:
         if os.path.exists(PERFORMANCE_FILE):
             with open(PERFORMANCE_FILE, "r") as f:
                 data = json.load(f)
-                # Lookup performance for 'nexus_core'
-                stats = data.get("nexus_core", {"win_rate": 50.0})
-                return stats["win_rate"]
-    except:
-        pass
-    return 50.0 # Default if no data exists
+                stats = data.get(STRATEGY_ID, {"win_rate": 50.0, "status": "LIVE", "sample_size": 0})
+                wr = stats["win_rate"]
+                
+                # KILL SWITCH: If strategy is losing significantly, stop trading
+                if stats["sample_size"] > 5 and wr < 40.0:
+                    print(f"🛑 KILL SWITCH TRIGGERED for {STRATEGY_ID}: Win Rate {wr}% is too low.")
+                    sys.exit(0) 
+                return wr
+    except Exception as e:
+        print(f"Learning Error: {e}")
+    return 50.0
 
 def compute_indicators(df):
     df = df.copy()
@@ -58,19 +65,19 @@ def run_alerts():
     ex = get_exchange(EXCHANGE_NAME)
     ex.load_markets()
 
-    # Initialize Database
+    # Initialize Database with REASON column
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             asset TEXT, timeframe TEXT, signal TEXT, 
-            entry REAL, sl REAL, tp REAL, confidence REAL, ts TEXT
+            entry REAL, sl REAL, tp REAL, confidence REAL, 
+            reason TEXT, ts TEXT
         )
     """)
     conn.commit()
 
-    # Get the 'Learned' confidence from history
     current_win_rate = get_learned_confidence()
 
     for asset in ASSETS:
@@ -84,10 +91,21 @@ def run_alerts():
                 atr = last["atr"] if not np.isnan(last["atr"]) else entry * 0.01
 
                 signal = "NEUTRAL"
-                if last["close"] > last["ema20"] and last["rsi"] < 70:
-                    signal = "LONG"
-                elif last["close"] < last["ema20"] and last["rsi"] > 30:
-                    signal = "SHORT"
+                reason = "NONE"
+                
+                # REASONING LOGIC
+                if last["rsi"] > 70:
+                    signal = "SHORT"; reason = "OVERBOUGHT REJECTION"
+                elif last["rsi"] < 30:
+                    signal = "LONG"; reason = "OVERSOLD REVERSAL"
+                elif last["close"] > last["ema20"] and df["close"].iloc[-2] <= df["ema20"].iloc[-2]:
+                    signal = "LONG"; reason = "EMA20 CROSSOVER"
+                elif last["close"] < last["ema20"] and df["close"].iloc[-2] >= df["ema20"].iloc[-2]:
+                    signal = "SHORT"; reason = "EMA20 BREAKDOWN"
+                elif last["close"] > last["ema20"]:
+                    signal = "LONG"; reason = "MEAN REVERSION"
+                elif last["close"] < last["ema20"]:
+                    signal = "SHORT"; reason = "MEAN REVERSION"
 
                 if signal != "NEUTRAL":
                     cursor.execute("SELECT signal FROM signals WHERE asset=? AND timeframe=? ORDER BY id DESC LIMIT 1", (asset, tf))
@@ -97,22 +115,18 @@ def run_alerts():
                         sl = (entry - ATR_MULTIPLIER_STOP * atr) if signal == "LONG" else (entry + ATR_MULTIPLIER_STOP * atr)
                         tp = (entry + RR_RATIO * abs(entry - sl)) if signal == "LONG" else (entry - RR_RATIO * abs(entry - sl))
                         
-                        # Apply learning: The confidence is now the historical Win Rate
                         confidence = current_win_rate
 
                         cursor.execute("""
-                            INSERT INTO signals (asset, timeframe, signal, entry, sl, tp, confidence, ts)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (asset, tf, signal, entry, sl, tp, confidence, datetime.now().isoformat()))
+                            INSERT INTO signals (asset, timeframe, signal, entry, sl, tp, confidence, reason, ts)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (asset, tf, signal, entry, sl, tp, confidence, reason, datetime.now().isoformat()))
                         conn.commit()
 
-                        # Discord Alert
                         emoji = "🟢" if signal == "LONG" else "🔴"
-                        status_msg = "🔥 OVERPERFORMING" if confidence > 60 else "⚠️ UNSTABLE" if confidence < 45 else "📊 STABLE"
-                        
                         notify(
                             f"{emoji} **{signal}** {asset} ({tf})\n"
-                            f"**Confidence: {confidence}%** ({status_msg})\n"
+                            f"**Confidence: {confidence}%** (📊 {reason})\n"
                             f"---\n"
                             f"Entry: {entry:.4f}\n"
                             f"SL: {sl:.4f} | TP: {tp:.4f}"
