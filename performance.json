@@ -2,21 +2,21 @@
     "nexus_core": {
         "win_rate": 50.0,
         "status": "LIVE",
-        "last_audit": "2026-01-23T20:15:21.901195"
+        "last_audit": "2026-01-23T21:00:03.325687"
     },
     "hybrid_v1": {
         "win_rate": 50.0,
         "status": "LIVE",
-        "last_audit": "2026-01-23T20:15:21.902023"
+        "last_audit": "2026-01-23T21:00:03.326490"
     },
     "nexus_ai": {
         "win_rate": 50.0,
         "status": "LIVE",
-        "last_audit": "2026-01-23T20:15:21.903758"
+        "last_audit": "2026-01-23T21:00:03.328217"
     },
     "rangemaster": {
         "win_rate": 50.0,
         "status": "LIVE",
-        "last_audit": "2026-01-23T20:15:21.902918"
+        "last_audit": "2026-01-23T21:00:03.327378"
     }
 }
