@@ -36,17 +36,35 @@ def run_hybrid():
     
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+    
+    # Standard schema
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            asset TEXT, signal TEXT, entry REAL, sl REAL, tp REAL, 
-            confidence REAL, reason TEXT, ts TEXT
+            asset TEXT,
+            timeframe TEXT,
+            signal TEXT,
+            entry REAL,
+            sl REAL,
+            tp REAL,
+            confidence REAL,
+            reason TEXT,
+            ts TEXT
         )
     """)
+    
+    # Migration: add timeframe column if missing (safe on old DBs)
+    cursor.execute("PRAGMA table_info(signals)")
+    columns = [info[1] for info in cursor.fetchall()]
+    if 'timeframe' not in columns:
+        cursor.execute("ALTER TABLE signals ADD COLUMN timeframe TEXT")
+    
     conn.commit()
 
     current_conf = get_learned_confidence()
-    if current_conf is None: return
+    if current_conf is None: 
+        conn.close()
+        return
 
     for asset in ["SOL/USDT", "BTC/USDT", "ETH/USDT"]:
         try:
@@ -74,9 +92,9 @@ def run_hybrid():
             tp = entry * (1.06 if signal == "LONG" else 0.94)
 
             cursor.execute("""
-                INSERT INTO signals (asset, signal, entry, sl, tp, confidence, reason, ts) 
-                VALUES (?,?,?,?,?,?,?,?)""",
-                (asset, signal, entry, sl, tp, current_conf, reason, datetime.now().isoformat()))
+                INSERT INTO signals (asset, timeframe, signal, entry, sl, tp, confidence, reason, ts) 
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (asset, '1h', signal, entry, sl, tp, current_conf, reason, datetime.now().isoformat()))
             conn.commit()
             
             notify(f"🔄 **Hybrid Alert**\nAsset: {asset}\nSignal: {signal}\n**Confidence: {current_conf}%** (📊 {reason})\n---\nEntry: {entry:.2f}\nSL: {sl:.2f} | TP: {tp:.2f}")
