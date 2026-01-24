@@ -1,26 +1,26 @@
 {
     "nexus_core": {
-        "win_rate": 4.0,
+        "win_rate": 2.0,
         "status": "RECOVERY",
         "sample_size": 50,
-        "last_audit": "2026-01-24T04:29:40.199512"
+        "last_audit": "2026-01-24T04:53:02.611650"
     },
     "hybrid_v1": {
         "win_rate": 50.0,
         "status": "LIVE",
         "sample_size": 0,
-        "last_audit": "2026-01-24T04:29:41.088263"
+        "last_audit": "2026-01-24T04:53:03.887515"
     },
     "nexus_ai": {
         "win_rate": 50.0,
         "status": "LIVE",
         "sample_size": 0,
-        "last_audit": "2026-01-24T04:29:41.981164"
+        "last_audit": "2026-01-24T04:53:04.767629"
     },
     "rangemaster": {
         "win_rate": 0.0,
         "status": "LIVE",
         "sample_size": 1,
-        "last_audit": "2026-01-24T04:29:41.439734"
+        "last_audit": "2026-01-24T04:53:04.114223"
     }
 }
