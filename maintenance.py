@@ -17,15 +17,13 @@ def run_maintenance():
                 conn = sqlite3.connect(db)
                 cursor = conn.cursor()
                 
-                # Count before deletion
                 cursor.execute("SELECT COUNT(*) FROM signals")
                 before = cursor.fetchone()[0]
                 
-                # Delete old records
+                # Parameterized deletion
                 cursor.execute("DELETE FROM signals WHERE ts < ?", (cutoff,))
                 conn.commit()
                 
-                # Count after deletion
                 cursor.execute("SELECT COUNT(*) FROM signals")
                 after = cursor.fetchone()[0]
                 
@@ -35,6 +33,5 @@ def run_maintenance():
                 print(f"❌ Error cleaning {db}: {e}")
 
     print("✨ Maintenance Complete. Databases are optimized.")
-
 if __name__ == "__main__":
     run_maintenance()
