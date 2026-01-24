@@ -34,20 +34,36 @@ def run_ai_logic():
     ex = ccxt.xt({"enableRateLimit": True})
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            asset TEXT, signal TEXT, entry REAL, sl REAL, tp REAL, 
-            confidence REAL, reason TEXT, ts TEXT
+            asset TEXT,
+            timeframe TEXT,
+            signal TEXT,
+            entry REAL,
+            sl REAL,
+            tp REAL,
+            confidence REAL,
+            reason TEXT,
+            ts TEXT
         )
     """)
+    
+    cursor.execute("PRAGMA table_info(signals)")
+    columns = [info[1] for info in cursor.fetchall()]
+    if 'timeframe' not in columns:
+        cursor.execute("ALTER TABLE signals ADD COLUMN timeframe TEXT")
+    
     conn.commit()
 
     # Learning Check
     if os.path.exists(PERFORMANCE_FILE):
         with open(PERFORMANCE_FILE, "r") as f:
             perf = json.load(f).get(STRATEGY_ID, {"status": "LIVE"})
-            if perf["status"] == "RECOVERY": return
+            if perf["status"] == "RECOVERY": 
+                conn.close()
+                return
 
     for asset in ["BTC/USDT", "ETH/USDT"]:
         try:
@@ -72,9 +88,9 @@ def run_ai_logic():
             tp = price * (1.04 if signal == "LONG" else 0.96)
 
             cursor.execute("""
-                INSERT INTO signals (asset, signal, entry, sl, tp, confidence, reason, ts) 
-                VALUES (?,?,?,?,?,?,?,?)""",
-                (asset, signal, price, sl, tp, final_conf, reason, datetime.now().isoformat()))
+                INSERT INTO signals (asset, timeframe, signal, entry, sl, tp, confidence, reason, ts) 
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (asset, '1h', signal, price, sl, tp, final_conf, reason, datetime.now().isoformat()))
             conn.commit()
             
             notify(f"🤖 **AI Prediction**\nAsset: {asset}\nSignal: {signal}\n**Confidence: {final_conf}%** (📊 {reason})")
