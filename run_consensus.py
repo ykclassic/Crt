@@ -1,55 +1,45 @@
 import sqlite3
 import pandas as pd
 import requests
-import os
+import logging
 from datetime import datetime, timedelta
+from config import DB_FILE, WEBHOOK_URL, ENGINES
 
-# --- CONFIGURATION ---
-DB_FILES = {
-    "nexus_core": "nexus_core.db",
-    "hybrid_v1": "hybrid_v1.db",
-    "rangemaster": "rangemaster.db",
-    "nexus_ai": "nexus_ai.db"
-}
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-APP_NAME = "NEXUS CONSENSUS"
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
 def notify_discord(message):
     if WEBHOOK_URL:
-        requests.post(WEBHOOK_URL, json={"content": message})
-
-# ... (top unchanged)
+        try:
+            requests.post(WEBHOOK_URL, json={"content": message})
+        except Exception as e:
+            logging.error(f"Consensus notify failed: {e}")
 
 def get_latest_signals():
-    all_signals = []
+    conn = sqlite3.connect(DB_FILE)
     time_threshold = (datetime.now() - timedelta(hours=4)).isoformat()
+    try:
+        df = pd.read_sql_query("""
+            SELECT asset, signal, confidence, reason, ts, engine 
+            FROM signals 
+            WHERE ts > ? 
+            ORDER BY ts DESC
+        """, conn, params=(time_threshold,))
+    finally:
+        conn.close()
 
-    for engine, db_path in DB_FILES.items():
-        if not os.path.exists(db_path):
-            continue
-        
-        try:
-            conn = sqlite3.connect(db_path)
-            query = "SELECT asset, signal, confidence, reason, ts FROM signals WHERE ts > ?"
-            df = pd.read_sql_query(query, conn, params=(time_threshold,))
-            conn.close()
+    if df.empty:
+        return pd.DataFrame()
 
-            if not df.empty:
-                df = df.sort_values('ts').groupby('asset').tail(1)
-                df['engine'] = engine
-                all_signals.append(df)
-        except Exception as e:
-            print(f"Error reading {engine}: {e}")
+    # Latest per asset+engine
+    df = df.sort_values('ts').groupby(['asset', 'engine']).tail(1)
+    return df
 
-    return pd.concat(all_signals) if all_signals else pd.DataFrame()
 def run_consensus_check():
     df = get_latest_signals()
     if df.empty:
-        print("No recent signals found for consensus.")
+        logging.info("No recent signals for consensus")
         return
 
-    # Group by asset and signal (LONG/SHORT)
-    # We want to see how many engines agree on the SAME direction for the SAME asset
     summary = df.groupby(['asset', 'signal']).agg({
         'engine': 'count',
         'confidence': 'mean',
@@ -63,34 +53,29 @@ def run_consensus_check():
         avg_conf = round(row['confidence'], 2)
         reasons = row['reason']
 
-        # EMOJI LOGIC
         side_emoji = "🔵" if direction == "LONG" else "🟠"
         
-        # --- DIAMOND CONSENSUS (4 Engines) ---
         if count >= 4:
             msg = (
                 f"💎 **[URGENT: DIAMOND CONSENSUS]** 💎\n"
-                f"**ALL 4 ENGINES AGREE ON {asset}**\n"
+                f"**ALL {count} ENGINES AGREE ON {asset}**\n"
                 f"{side_emoji} Signal: **{direction}**\n"
                 f"📈 Avg Confidence: {avg_conf}%\n"
-                f"--- \n"
                 f"**Technical Confluence:** {reasons}\n"
                 f"⚠️ *Highest Tier Probability Setup*"
             )
             notify_discord(msg)
-            print(f"Diamond Match found for {asset}")
-
-        # --- GOLD CONSENSUS (3 Engines) ---
-        elif count == 3:
+            logging.info(f"Diamond consensus: {asset} {direction}")
+        elif count >= 3:
             msg = (
                 f"🥇 **[GOLD CONSENSUS]**\n"
-                f"**3 Engines align on {asset}**\n"
+                f"**{count} Engines align on {asset}**\n"
                 f"{side_emoji} Signal: **{direction}**\n"
                 f"Confidence: {avg_conf}%\n"
                 f"Basis: {reasons}"
             )
             notify_discord(msg)
-            print(f"Gold Match found for {asset}")
+            logging.info(f"Gold consensus: {asset} {direction}")
 
 if __name__ == "__main__":
     run_consensus_check()
