@@ -23,4 +23,5 @@ anthropic
 groq
 mistralai
 openai
+tweepy
 
