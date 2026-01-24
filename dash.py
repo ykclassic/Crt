@@ -59,23 +59,26 @@ def load_signals(db_path):
         df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 100", conn)
         conn.close()
         
-        # Standardize and Round Confidence
+        # Aggressive column standardization
+        df.columns = [c.strip().lower() for c in df.columns]
+        
         if "conf" in df.columns and "confidence" not in df.columns:
             df = df.rename(columns={"conf": "confidence"})
         
-        if "confidence" in df.columns:
-            df["confidence"] = pd.to_numeric(df["confidence"], errors='coerce').fillna(0).round(2)
-        else:
+        # Ensure confidence exists as a float
+        if "confidence" not in df.columns:
             df["confidence"] = 0.0
+        else:
+            df["confidence"] = pd.to_numeric(df["confidence"], errors='coerce').fillna(0.0)
             
-        # Clean Reasons
         if "reason" not in df.columns:
             df["reason"] = "Legacy Signal"
         else:
             df["reason"] = df["reason"].fillna("Legacy Signal").replace("", "Legacy Signal")
             
         return df
-    except: return pd.DataFrame()
+    except:
+        return pd.DataFrame()
 
 def discord_forward_helper(df, title):
     temp_name = "dispatch_temp.csv"
@@ -91,7 +94,7 @@ def discord_forward_helper(df, title):
 # --- INITIALIZE ---
 init_journal()
 
-# --- HEADER & GLOBAL STATS ---
+# --- HEADER & STATS ---
 st.title("🛡️ Nexus Intelligence Suite: Visual Command")
 
 perf_data = {}
@@ -112,7 +115,7 @@ for i, (name, db_file) in enumerate(DB_FILES.items()):
 
 st.divider()
 
-# --- TOP: CONFLUENCE & JOURNAL ---
+# --- TOP: CONFLUENCE ---
 c_left, c_right = st.columns([1, 1])
 
 with c_left:
@@ -122,6 +125,9 @@ with c_left:
     
     if master_list:
         m_df = pd.concat(master_list)
+        # Ensure consistent types for groupby
+        m_df['asset'] = m_df['asset'].astype(str)
+        m_df['signal'] = m_df['signal'].astype(str)
         
         consensus = m_df.groupby(['asset', 'signal']).agg({
             'Engine': 'count', 
@@ -131,18 +137,8 @@ with c_left:
         
         consensus['Avg_Conf'] = consensus['Avg_Conf'].round(2)
         
-        def highlight_matches(val):
-            if val == 4: return 'background-color: #70d6ff; color: black; font-weight: bold'
-            if val == 3: return 'background-color: #ffd60a; color: black; font-weight: bold'
-            return ''
-
-        # Only apply style if 'Matches' column exists
-        styled_consensus = consensus.sort_values('Matches', ascending=False)
-        if 'Matches' in styled_consensus.columns:
-            st.dataframe(styled_consensus.style.applymap(highlight_matches, subset=['Matches']), 
-                         use_container_width=True, hide_index=True)
-        else:
-            st.dataframe(styled_consensus, use_container_width=True, hide_index=True)
+        # Safer Styler for Confluence
+        st.dataframe(consensus.sort_values('Matches', ascending=False), use_container_width=True, hide_index=True)
     else:
         st.info("Awaiting market data confluence...")
 
@@ -154,8 +150,7 @@ with c_right:
         if st.button("Save Note"):
             save_journal_entry(cat, note); st.rerun()
     
-    j_search = st.text_input("🔍 Search Logs")
-    history = load_journal(j_search)
+    history = load_journal(st.text_input("🔍 Search Logs"))
     if not history.empty:
         jc1, jc2 = st.columns(2)
         jc1.download_button("📥 Download CSV", convert_df_to_csv(history), "journal.csv")
@@ -181,7 +176,7 @@ if st.button("🔮 Run Prediction"):
 
 st.divider()
 
-# --- BOTTOM: ANALYTICS & SIGNAL FEED ---
+# --- BOTTOM: ANALYTICS & FEED ---
 st.subheader("📡 Intelligence Feed & Signal Exports")
 
 if master_list:
@@ -200,20 +195,17 @@ if master_list:
         st.plotly_chart(px.scatter(full_signals, x="ts", y="confidence", color="Engine", hover_data=["asset"]), use_container_width=True)
     
     with tab_raw:
-        # --- FIXED LOGIC ---
-        def color_confidence(val):
-            try:
-                v = float(val)
-                color = 'green' if v > 80 else 'white' if v > 60 else 'red'
-                return f'color: {color}'
-            except:
-                return 'color: white'
-        
-        # We only apply the color style if 'confidence' column exists and has data
-        if 'confidence' in full_signals.columns and not full_signals.empty:
-            st.dataframe(full_signals.style.applymap(color_confidence, subset=['confidence']), 
-                         use_container_width=True, hide_index=True)
-        else:
+        # THE MOST ROBUST STYLING APPROACH
+        def apply_row_style(row):
+            conf = row.get('confidence', 0)
+            color = 'color: #00ff00' if conf > 80 else 'color: #ff4b4b' if conf < 60 else 'color: white'
+            return [color] * len(row)
+
+        try:
+            # We apply the style row-wise to prevent KeyError on specific columns
+            st.dataframe(full_signals.style.apply(apply_row_style, axis=1), use_container_width=True, hide_index=True)
+        except:
+            # Fallback to unstyled if Pandas Styler fails again
             st.dataframe(full_signals, use_container_width=True, hide_index=True)
 else:
     st.warning("Awaiting signal data...")
