@@ -65,6 +65,8 @@ def load_signals(db_path):
         
         if "confidence" in df.columns:
             df["confidence"] = pd.to_numeric(df["confidence"], errors='coerce').fillna(0).round(2)
+        else:
+            df["confidence"] = 0.0
             
         # Clean Reasons
         if "reason" not in df.columns:
@@ -127,17 +129,20 @@ with c_left:
             'reason': lambda x: ' + '.join([str(r) for r in x.unique() if r != "Legacy Signal"]) or "Legacy Signal"
         }).reset_index().rename(columns={'Engine': 'Matches', 'confidence': 'Avg_Conf', 'reason': 'Technical_Confluence'})
         
-        # Round the average confluence for display
         consensus['Avg_Conf'] = consensus['Avg_Conf'].round(2)
         
-        # Styling: Highlight Matches >= 3 (Gold) and Matches == 4 (Diamond)
         def highlight_matches(val):
-            if val == 4: return 'background-color: #70d6ff; color: black; font-weight: bold' # Diamond Blue
-            if val == 3: return 'background-color: #ffd60a; color: black; font-weight: bold' # Gold
+            if val == 4: return 'background-color: #70d6ff; color: black; font-weight: bold'
+            if val == 3: return 'background-color: #ffd60a; color: black; font-weight: bold'
             return ''
 
-        st.dataframe(consensus.sort_values('Matches', ascending=False).style.applymap(highlight_matches, subset=['Matches']), 
-                     use_container_width=True, hide_index=True)
+        # Only apply style if 'Matches' column exists
+        styled_consensus = consensus.sort_values('Matches', ascending=False)
+        if 'Matches' in styled_consensus.columns:
+            st.dataframe(styled_consensus.style.applymap(highlight_matches, subset=['Matches']), 
+                         use_container_width=True, hide_index=True)
+        else:
+            st.dataframe(styled_consensus, use_container_width=True, hide_index=True)
     else:
         st.info("Awaiting market data confluence...")
 
@@ -192,16 +197,24 @@ if master_list:
     tab_vis, tab_raw = st.tabs(["📊 Performance Visuals", "📜 Raw Signal Data"])
     
     with tab_vis:
-        st.plotly_chart(px.scatter(full_signals, x="ts", y="confidence", color="Engine", hover_data=["asset", "reason"]), use_container_width=True)
+        st.plotly_chart(px.scatter(full_signals, x="ts", y="confidence", color="Engine", hover_data=["asset"]), use_container_width=True)
     
     with tab_raw:
-        # Highlight high conviction rows
+        # --- FIXED LOGIC ---
         def color_confidence(val):
-            color = 'green' if val > 80 else 'white' if val > 60 else 'red'
-            return f'color: {color}'
+            try:
+                v = float(val)
+                color = 'green' if v > 80 else 'white' if v > 60 else 'red'
+                return f'color: {color}'
+            except:
+                return 'color: white'
         
-        st.dataframe(full_signals.style.applymap(color_confidence, subset=['confidence']), 
-                     use_container_width=True, hide_index=True)
+        # We only apply the color style if 'confidence' column exists and has data
+        if 'confidence' in full_signals.columns and not full_signals.empty:
+            st.dataframe(full_signals.style.applymap(color_confidence, subset=['confidence']), 
+                         use_container_width=True, hide_index=True)
+        else:
+            st.dataframe(full_signals, use_container_width=True, hide_index=True)
 else:
     st.warning("Awaiting signal data...")
 
