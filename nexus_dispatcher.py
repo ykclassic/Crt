@@ -14,19 +14,21 @@ def send_to_discord(msg):
     except Exception as e:
         print(f"Failed to post to Discord: {e}")
 
+d# ... (top unchanged)
+
 def dispatch_alerts():
     print(f"📡 Nexus Dispatcher Active: {datetime.now()}")
     new_signals = []
     
-    # Check for signals generated in the last 65 minutes (to cover the hourly trigger)
+    # Parameterized lookback
     lookback_time = (datetime.now() - timedelta(minutes=65)).isoformat()
 
     for db_file in DB_FILES:
         if not os.path.exists(db_file): continue
         try:
             conn = sqlite3.connect(db_file)
-            query = f"SELECT * FROM signals WHERE ts > '{lookback_time}'"
-            df = pd.read_sql_query(query, conn)
+            query = "SELECT * FROM signals WHERE ts > ?"
+            df = pd.read_sql_query(query, conn, params=(lookback_time,))
             if not df.empty:
                 df['engine'] = db_file.replace(".db", "")
                 new_signals.append(df)
@@ -34,6 +36,7 @@ def dispatch_alerts():
         except Exception as e:
             print(f"Error reading {db_file}: {e}")
 
+    # ... (rest unchanged)
     if new_signals:
         master = pd.concat(new_signals)
         # Drop duplicates in case multiple runs happen
