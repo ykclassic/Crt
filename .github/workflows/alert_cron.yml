@@ -2,66 +2,56 @@ name: Nexus Intelligence Suite
 
 on:
   schedule:
-    - cron: '0 * * * *' # Runs every hour
-  workflow_dispatch:   # Allows manual trigger
-
-permissions:
-  contents: write
+    - cron: '0 * * * *'      # Runs every hour (Trading/AI Training)
+    - cron: '0 21 * * 0'     # Weekly Report: Every Sunday at 9 PM UTC
+    - cron: '0 21 1 * *'     # Monthly Report: 1st of every month at 9 PM UTC
+  push:
+    branches: [ main ]
+  workflow_dispatch:          # Allows manual trigger of the report
 
 jobs:
-  intelligence-run:
+  nexus_operations:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.10'
 
       - name: Install Dependencies
-        run: |
-          pip install ccxt pandas numpy requests scikit-learn plotly streamlit
+        run: pip install pandas requests ccxt scikit-learn plotly streamlit
 
-      - name: Execute Intelligence Engines
+      - name: Run Trading Engines
+        run: |
+          python run_alerts.py
+          python run_consensus.py
+          python train_brain.py
+          python audit_intelligence.py
+
+      # Logic to send specific reports based on schedule
+      - name: Weekly/Monthly/Manual Reports
+        if: |
+          github.event_name == 'workflow_dispatch' || 
+          (github.event.schedule == '0 21 * * 0') || 
+          (github.event.schedule == '0 21 1 * *')
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          # 1. THE ARCHITECT: Retrain the AI Brain on latest 500h data
-          python train_brain.py || echo "Training Skip"
-          
-          # 2. THE TEACHER: Audit performance and update Trust Scores
-          python audit_intelligence.py || echo "Audit Skip"
-          
-          # 3. THE STUDENTS: Run strategy engines
-          python run_alerts.py || echo "Core Engine Skip"
-          python run_alerts1.py || echo "Hybrid Engine Skip"
-          python run_alerts2.py || echo "Range Engine Skip"
-          python run_alerts3.py || echo "AI Engine Skip"
-          
-          # 4. THE JUDGE: Final consensus check
-          python run_consensus.py || echo "Consensus Engine Skip"
-
-      - name: Persist Intelligence Data
-        run: |
-          git config --local user.name "github-actions[bot]"
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # GRACEFUL ADD: Capturing DBs, Performance JSON, and the AI Brain (.pkl)
-          for file in *.db *.json *.pkl; do
-            if [ -f "$file" ]; then
-              git add "$file"
-            fi
-          done
-          
-          git pull --rebase --autostash origin main
-          
-          if ! git diff --cached --quiet; then
-            git commit -m "Intelligence Sync: $(date +'%Y-%m-%d %H:%M:%S') [Brain Updated]"
-            git push origin main
+          if [[ "${{ github.event.schedule }}" == "0 21 * * 0" ]]; then
+            python nexus_reporter.py --type "WEEKLY PERFORMANCE AUDIT"
+          elif [[ "${{ github.event.schedule }}" == "0 21 1 * *" ]]; then
+            python nexus_reporter.py --type "MONTHLY STRATEGY REVIEW"
           else
-            echo "No intelligence updates to persist this run."
+            python nexus_reporter.py --type "MANUAL SNAPSHOT REPORT"
           fi
+
+      - name: Commit & Push Changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add *.db *.json *.pkl
+          git commit -m "Automated Sync: $(date)" || echo "No changes to commit"
+          git push
