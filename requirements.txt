@@ -18,7 +18,9 @@ streamlit-autorefresh
 shap
 lifelines
 pandas-ta
+xgboost
 anthropic
 groq
 mistralai
 openai
+
