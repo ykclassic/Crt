@@ -8,6 +8,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+import math
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Nexus Intelligence Suite", layout="wide", page_icon="🧠")
@@ -35,35 +36,44 @@ def load_signals(db_path):
         conn = sqlite3.connect(db_path)
         df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 100", conn)
         conn.close()
-        
-        # --- DATA CLEANING FIX ---
-        # 1. Standardize 'conf' vs 'confidence'
         if "conf" in df.columns and "confidence" not in df.columns:
             df = df.rename(columns={"conf": "confidence"})
-        
-        # 2. Ensure 'reason' exists (for older database rows)
         if "reason" not in df.columns:
             df["reason"] = "LEGACY"
-        
         return df
-    except Exception as e:
+    except:
         return pd.DataFrame()
 
-# --- HEADER & KEY METRICS ---
+# --- HEADER ---
 st.title("🛡️ Nexus Intelligence Suite: Visual Command")
-st.markdown(f"**System Status:** Monitoring Active | **Last Sync:** {datetime.now().strftime('%H:%M:%S')}")
+st.markdown(f"**System Status:** Statistical Auditing Active | **Last Sync:** {datetime.now().strftime('%H:%M:%S')}")
 
 perf_data = load_performance()
 m_cols = st.columns(len(DB_FILES))
 
 for i, (name, db_file) in enumerate(DB_FILES.items()):
     strat_id = db_file.replace(".db", "")
-    stats = perf_data.get(strat_id, {"win_rate": 50.0, "status": "LIVE"})
+    stats = perf_data.get(strat_id, {"win_rate": 0.0, "status": "LIVE", "sample_size": 0})
     
+    # Calculate Trust Score
+    wr = stats.get("win_rate", 0)
+    ss = stats.get("sample_size", 0)
+    # Formula: (WR * sqrt(SS)) / 10
+    trust_score = round((wr * math.sqrt(ss)) / 10, 1) if ss > 0 else 0.0
+
     with m_cols[i]:
-        status_label = "✅ LIVE" if stats.get('status') == "LIVE" else "⚠️ RECOVERY"
-        st.metric(label=name, value=f"{stats.get('win_rate', 50.0)}%", delta=status_label, 
-                  delta_color="normal" if stats.get('status') == "LIVE" else "inverse")
+        st.subheader(name)
+        status_color = "green" if stats.get('status') == "LIVE" else "orange"
+        st.markdown(f"**Status:** :{status_color}[{stats.get('status', 'OFFLINE')}]")
+        
+        # Display Metrics
+        c1, c2 = st.columns(2)
+        c1.metric("Win Rate", f"{wr}%")
+        c2.metric("Sample Size", ss)
+        
+        # Trust Score Highlight
+        st.metric("Trust Score", f"{trust_score}/100", help="Combined score of accuracy and statistical significance.")
+        st.progress(min(trust_score / 100, 1.0))
 
 st.divider()
 
@@ -92,7 +102,7 @@ if st.button("🔮 Run AI Prediction"):
         except Exception as e:
             st.error(f"Prediction Error: {e}")
     else:
-        st.error("Model file (nexus_brain.pkl) not found. Run training script first.")
+        st.error("Model file not found. Run training script first.")
 
 st.divider()
 
@@ -107,44 +117,21 @@ for name, db in DB_FILES.items():
         all_data.append(df)
 
 if all_data:
-    # Concatenate and fill missing columns gracefully
-    master_df = pd.concat(all_data, sort=False)
-    master_df["reason"] = master_df["reason"].fillna("TECHNICAL")
-    master_df["confidence"] = pd.to_numeric(master_df["confidence"], errors='coerce').fillna(50.0)
+    master_df = pd.concat(all_data, sort=False).fillna("N/A")
     master_df = master_df.sort_values("ts", ascending=False)
     
     with tab1:
-        # Visualizing the logic behind trades
-        try:
-            fig = px.scatter(master_df, x="ts", y="confidence", color="reason", 
-                             title="Signal Conviction by Reason",
-                             hover_data=["asset", "Engine", "signal"],
-                             color_discrete_sequence=px.colors.qualitative.Safe)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Asset distribution
-            fig2 = px.histogram(master_df, x="asset", color="Engine", barmode="group", title="Asset Activity Distribution")
-            st.plotly_chart(fig2, use_container_width=True)
-        except Exception as e:
-            st.warning(f"Charts are refreshing... (Reason: Data Syncing)")
+        fig = px.scatter(master_df, x="ts", y="confidence", color="reason", 
+                         title="Signal Conviction by Reason",
+                         hover_data=["asset", "Engine"])
+        st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        # Clean display for the table
-        cols_to_show = ["ts", "Engine", "asset", "signal", "confidence", "reason", "entry", "sl", "tp"]
-        # Ensure only existing columns are used
-        available_cols = [c for c in cols_to_show if c in master_df.columns]
-        st.dataframe(master_df[available_cols].head(30), use_container_width=True, hide_index=True)
-else:
-    st.info("Waiting for signals... Ensure your engines are running on GitHub Actions.")
+        st.dataframe(
+            master_df[["ts", "Engine", "asset", "signal", "confidence", "reason", "entry", "sl", "tp"]].head(20),
+            use_container_width=True, hide_index=True
+        )
 
 st.sidebar.title("🛠️ System Control")
 if st.sidebar.button("🔄 Refresh Dashboard"):
     st.rerun()
-
-st.sidebar.markdown("---")
-st.sidebar.write("### Engine Health")
-for name, db in DB_FILES.items():
-    if os.path.exists(db):
-        st.sidebar.success(f"{name}: Connected")
-    else:
-        st.sidebar.error(f"{name}: DB Missing")
