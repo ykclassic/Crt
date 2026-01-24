@@ -1,37 +1,33 @@
 import sqlite3
-import os
-import json
+import logging
 from datetime import datetime, timedelta
+from config import DB_FILE, DAYS_TO_KEEP
 
-# --- CONFIGURATION ---
-DB_FILES = ["nexus_core.db", "hybrid_v1.db", "rangemaster.db", "nexus_ai.db"]
-DAYS_TO_KEEP = 30
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
 def run_maintenance():
-    print(f"🧹 Starting System Maintenance: {datetime.now().strftime('%Y-%m-%d')}")
+    logging.info(f"Maintenance start: {datetime.now().strftime('%Y-%m-%d')}")
     cutoff = (datetime.now() - timedelta(days=DAYS_TO_KEEP)).isoformat()
 
-    for db in DB_FILES:
-        if os.path.exists(db):
-            try:
-                conn = sqlite3.connect(db)
-                cursor = conn.cursor()
-                
-                cursor.execute("SELECT COUNT(*) FROM signals")
-                before = cursor.fetchone()[0]
-                
-                # Parameterized deletion
-                cursor.execute("DELETE FROM signals WHERE ts < ?", (cutoff,))
-                conn.commit()
-                
-                cursor.execute("SELECT COUNT(*) FROM signals")
-                after = cursor.fetchone()[0]
-                
-                conn.close()
-                print(f"✅ {db}: Removed {before - after} old records. Remaining: {after}")
-            except Exception as e:
-                print(f"❌ Error cleaning {db}: {e}")
+    if not os.path.exists(DB_FILE):
+        logging.warning("DB not found")
+        return
 
-    print("✨ Maintenance Complete. Databases are optimized.")
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM signals")
+    before = cursor.fetchone()[0]
+    
+    cursor.execute("DELETE FROM signals WHERE ts < ?", (cutoff,))
+    conn.commit()
+    
+    cursor.execute("SELECT COUNT(*) FROM signals")
+    after = cursor.fetchone()[0]
+    
+    conn.close()
+    logging.info(f"Removed {before - after} old records. Remaining: {after}")
+    logging.info("Maintenance complete.")
+
 if __name__ == "__main__":
     run_maintenance()
