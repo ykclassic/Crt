@@ -2,56 +2,43 @@ name: Nexus Intelligence Suite
 
 on:
   schedule:
-    - cron: '0 * * * *'      # Runs every hour (Trading/AI Training)
-    - cron: '0 21 * * 0'     # Weekly Report: Every Sunday at 9 PM UTC
-    - cron: '0 21 1 * *'     # Monthly Report: 1st of every month at 9 PM UTC
-  push:
-    branches: [ main ]
-  workflow_dispatch:          # Allows manual trigger of the report
+    - cron: '0 * * * *'      # Hourly Trading & AI Training
+    - cron: '0 20 * * 0'     # Weekly Report: Every Sunday 8PM UTC
+    - cron: '0 20 1 * *'     # Monthly Report: 1st of the month 8PM UTC
+  workflow_dispatch:          # Allows you to click "Run" for an instant report
 
 jobs:
-  nexus_operations:
+  nexus-ops:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Python
+      - name: Python Setup
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-
-      - name: Install Dependencies
+      - name: Deps
         run: pip install pandas requests ccxt scikit-learn plotly streamlit
-
-      - name: Run Trading Engines
-        run: |
-          python run_alerts.py
-          python run_consensus.py
-          python train_brain.py
-          python audit_intelligence.py
-
-      # Logic to send specific reports based on schedule
-      - name: Weekly/Monthly/Manual Reports
-        if: |
-          github.event_name == 'workflow_dispatch' || 
-          (github.event.schedule == '0 21 * * 0') || 
-          (github.event.schedule == '0 21 1 * *')
+      
+      - name: Execute Intelligence
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          if [[ "${{ github.event.schedule }}" == "0 21 * * 0" ]]; then
-            python nexus_reporter.py --type "WEEKLY PERFORMANCE AUDIT"
-          elif [[ "${{ github.event.schedule }}" == "0 21 1 * *" ]]; then
-            python nexus_reporter.py --type "MONTHLY STRATEGY REVIEW"
-          else
-            python nexus_reporter.py --type "MANUAL SNAPSHOT REPORT"
+          python train_brain.py
+          python run_consensus.py
+          python sanity_check.py
+          
+          # Scheduled Reporting Logic
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            python nexus_reporter.py --full
+          elif [[ "${{ github.event.schedule }}" == "0 20 * * 0" ]]; then
+            python nexus_reporter.py --full
           fi
 
-      - name: Commit & Push Changes
+      - name: Sync Data
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git add *.db *.json *.pkl
-          git commit -m "Automated Sync: $(date)" || echo "No changes to commit"
+          git commit -m "Intelligence Sync" || echo "No changes"
           git push
