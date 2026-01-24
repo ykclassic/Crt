@@ -1,111 +1,168 @@
+import ccxt
 import pandas as pd
 import numpy as np
-import ccxt
-import pickle
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import TimeSeriesSplit, cross_val_score
-from sklearn.metrics import classification_report
-from xgboost import XGBClassifier
+import sqlite3
+import requests
 import logging
+import pickle
+from datetime import datetime
+from config import DB_FILE, WEBHOOK_URL, MODEL_FILE, PERFORMANCE_FILE, ENGINES, ATR_PERIOD, ATR_MULTIPLIER_SL, RR_RATIO, DEFAULT_TIMEFRAME
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
-ASSETS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
-TIMEFRAME = "1h"
-LIMIT = 2000  # ~3 months per asset
-PREDICTION_HORIZON = 6  # Hours ahead for target
+APP_NAME = ENGINES["ai"]
+STRATEGY_ID = "ai"
 
-def fetch_and_prepare_data():
-    ex = ccxt.xt({"enableRateLimit": True})
-    all_dfs = []
-
-    for asset in ASSETS:
-        logging.info(f"Fetching {LIMIT} candles for {asset}...")
+def notify(msg):
+    if WEBHOOK_URL:
         try:
-            ohlcv = ex.fetch_ohlcv(asset, TIMEFRAME, limit=LIMIT)
-            df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
-            df['asset'] = asset
-            all_dfs.append(df)
+            requests.post(WEBHOOK_URL, json={"content": f"**[{APP_NAME}]**\n{msg}"})
         except Exception as e:
-            logging.error(f"Fetch failed for {asset}: {e}")
+            logging.error(f"Discord notify failed: {e}")
 
-    if not all_dfs:
-        raise ValueError("No data fetched")
+def get_ai_prediction(features):
+    """
+    features: dict with keys:
+    'rsi', 'vol_change', 'dist_ema', 'atr_norm',
+    'return_lag_1', 'return_lag_3', 'return_lag_6'
+    """
+    try:
+        if not os.path.exists(MODEL_FILE):
+            logging.warning("Model file missing - falling back to heuristic")
+            return None
+        with open(MODEL_FILE, "rb") as f:
+            model, scaler = pickle.load(f)
+        
+        feat_array = np.array([[
+            features['rsi'],
+            features['vol_change'],
+            features['dist_ema'],
+            features['atr_norm'],
+            features['return_lag_1'],
+            features['return_lag_3'],
+            features['return_lag_6']
+        ]])
+        feat_scaled = scaler.transform(feat_array)
+        prob_up = model.predict_proba(feat_scaled)[0][1]
+        return round(prob_up * 100, 2)
+    except Exception as e:
+        logging.error(f"AI prediction error: {e}")
+        return None
 
-    data = pd.concat(all_dfs)
-    data = data.sort_values('ts')
+def compute_atr(df):
+    tr = pd.concat([
+        (df['h'] - df['l']),
+        (df['h'] - df['c'].shift()).abs(),
+        (df['l'] - df['c'].shift()).abs()
+    ], axis=1).max(axis=1)
+    return tr.rolling(ATR_PERIOD).mean()
 
-    # Features
-    delta = data['close'].diff()
-    up, down = delta.clip(lower=0), -delta.clip(upper=0)
-    data['rsi'] = 100 - (100 / (1 + up.rolling(14).mean() / down.rolling(14).mean()))
+def should_insert_signal(cursor, asset, timeframe, new_signal):
+    cursor.execute("""
+        SELECT signal FROM signals 
+        WHERE asset = ? AND timeframe = ? AND engine = ? 
+        ORDER BY ts DESC LIMIT 1
+    """, (asset, timeframe, STRATEGY_ID))
+    last = cursor.fetchone()
+    return not last or last[0] != new_signal
 
-    data['ema20'] = data['close'].ewm(span=20).mean()
-    data['dist_ema'] = (data['close'] - data['ema20']) / data['close'] * 100
+def run_ai():
+    ex = ccxt.xt({"enableRateLimit": True})
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            engine TEXT,
+            asset TEXT,
+            timeframe TEXT,
+            signal TEXT,
+            entry REAL,
+            sl REAL,
+            tp REAL,
+            confidence REAL,
+            reason TEXT,
+            ts TEXT
+        )
+    """)
+    conn.commit()
 
-    data['vol_change'] = data['volume'].pct_change()
+    # Recovery check
+    if os.path.exists(PERFORMANCE_FILE):
+        try:
+            with open(PERFORMANCE_FILE, "r") as f:
+                perf = json.load(f).get(STRATEGY_ID, {"status": "LIVE"})
+                if perf.get("status") == "RECOVERY":
+                    logging.info("AI engine in RECOVERY mode - skipping run")
+                    conn.close()
+                    return
+        except Exception as e:
+            logging.error(f"Performance file read error: {e}")
 
-    tr = pd.concat([data['high'] - data['low'],
-                    (data['high'] - data['close'].shift()).abs(),
-                    (data['low'] - data['close'].shift()).abs()], axis=1).max(axis=1)
-    data['atr'] = tr.rolling(14).mean()
-    data['atr_norm'] = data['atr'] / data['close'] * 100
+    for asset in ["BTC/USDT", "ETH/USDT"]:
+        try:
+            data = ex.fetch_ohlcv(asset, DEFAULT_TIMEFRAME, limit=100)
+            df = pd.DataFrame(data, columns=['ts','o','h','l','c','v'])
+            
+            # Indicators
+            df['ema20'] = df['c'].ewm(span=20).mean()
+            
+            delta = df['c'].diff()
+            up, down = delta.clip(lower=0), -delta.clip(upper=0)
+            df['rsi'] = 100 - (100 / (1 + up.rolling(14).mean() / down.rolling(14).mean()))
+            
+            df['vol_change'] = df['v'].pct_change()
+            df['dist_ema'] = (df['c'] - df['ema20']) / df['c'] * 100
+            
+            df['atr'] = compute_atr(df)
+            df['atr_norm'] = df['atr'] / df['c'] * 100
+            
+            # Lagged returns
+            for lag in [1, 3, 6]:
+                df[f'return_lag_{lag}'] = df['c'].pct_change(lag) * 100
+            
+            last = df.iloc[-1]
+            
+            # Fill any NaN with safe defaults
+            atr_norm = last['atr_norm'] if not np.isnan(last['atr_norm']) else 0.0
+            return_lag_1 = last.get('return_lag_1', 0.0) if not np.isnan(last.get('return_lag_1', 0.0)) else 0.0
+            return_lag_3 = last.get('return_lag_3', 0.0) if not np.isnan(last.get('return_lag_3', 0.0)) else 0.0
+            return_lag_6 = last.get('return_lag_6', 0.0) if not np.isnan(last.get('return_lag_6', 0.0)) else 0.0
+            
+            ai_conf = get_ai_prediction({
+                'rsi': last['rsi'],
+                'vol_change': last['vol_change'],
+                'dist_ema': last['dist_ema'],
+                'atr_norm': atr_norm,
+                'return_lag_1': return_lag_1,
+                'return_lag_3': return_lag_3,
+                'return_lag_6': return_lag_6
+            })
+            
+            reason = "DEEP NETWORK" if ai_conf is not None else "HEURISTIC FALLBACK"
+            final_conf = ai_conf if ai_conf is not None else 52.0
+            signal = "LONG" if final_conf > 50 else "SHORT"
+            
+            price = last['c']
+            atr = last['atr'] if not np.isnan(last['atr']) else price * 0.01
+            sl = (price - ATR_MULTIPLIER_SL * atr) if signal == "LONG" else (price + ATR_MULTIPLIER_SL * atr)
+            tp = (price + RR_RATIO * abs(price - sl)) if signal == "LONG" else (price - RR_RATIO * abs(price - sl))
 
-    # Lagged returns for momentum
-    for lag in [1, 3, 6]:
-        data[f'return_lag_{lag}'] = data['close'].pct_change(lag) * 100
-
-    # Target: price up in next N hours?
-    data['target'] = (data['close'].shift(-PREDICTION_HORIZON) > data['close']).astype(int)
-
-    data = data.dropna()
-    return data
-
-def train_model():
-    logging.info("Preparing multi-asset dataset...")
-    df = fetch_and_prepare_data()
-
-    features = ['rsi', 'vol_change', 'dist_ema', 'atr_norm',
-                 'return_lag_1', 'return_lag_3', 'return_lag_6']
-    X = df[features]
-    y = df['target']
-
-    # Chronological split
-    split_idx = int(len(df) * 0.8)
-    X_train, X_test = X[:split_idx], X[split_idx:]
-    y_train, y_test = y[:split_idx], y[split_idx:]
-
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-
-    model = XGBClassifier(
-        n_estimators=200,
-        max_depth=6,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=42,
-        eval_metric='logloss'
-    )
-
-    logging.info("Training XGBoost model...")
-    model.fit(X_train_scaled, y_train)
-
-    # Evaluation
-    preds = model.predict(X_test_scaled)
-    logging.info("Test Set Report:\n" + classification_report(y_test, preds))
-
-    # Cross-validation (time-series aware)
-    tscv = TimeSeriesSplit(n_splits=5)
-    cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=tscv, scoring='f1')
-    logging.info(f"CV F1 Scores: {cv_scores.mean():.3f} (+/- {cv_scores.std() * 2:.3f})")
-
-    # Save model + scaler
-    with open("nexus_brain.pkl", "wb") as f:
-        pickle.dump((model, scaler), f)
-
-    logging.info("🧠 Enhanced XGBoost model trained and saved (multi-asset, richer features).")
+            if should_insert_signal(cursor, asset, DEFAULT_TIMEFRAME, signal):
+                cursor.execute("""
+                    INSERT INTO signals (engine, asset, timeframe, signal, entry, sl, tp, confidence, reason, ts) 
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                """, (STRATEGY_ID, asset, DEFAULT_TIMEFRAME, signal, price, sl, tp, final_conf, reason, datetime.now().isoformat()))
+                conn.commit()
+                
+                notify(f"🤖 **AI Prediction**\nAsset: {asset}\nSignal: {signal}\n**Confidence: {final_conf}%** (📊 {reason})")
+                logging.info(f"AI signal inserted: {signal} {asset} (Conf: {final_conf}%)")
+        except Exception as e:
+            logging.error(f"AI error {asset}: {e}")
+    
+    conn.close()
+    logging.info("AI engine run complete.")
 
 if __name__ == "__main__":
-    train_model()
+    run_ai()
