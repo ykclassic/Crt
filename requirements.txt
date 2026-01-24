@@ -24,4 +24,5 @@ groq
 mistralai
 openai
 tweepy
+textblob
 
