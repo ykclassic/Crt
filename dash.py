@@ -22,14 +22,16 @@ JOURNAL_DB = "nexus_journal.db"
 PERFORMANCE_FILE = "performance.json"
 MODEL_FILE = "nexus_brain.pkl"
 
-# --- DATABASE UTILITIES ---
+# --- UTILITIES & DATABASE ---
+@st.cache_data
+def convert_df_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
+
 def init_journal():
     conn = sqlite3.connect(JOURNAL_DB)
     conn.execute('''CREATE TABLE IF NOT EXISTS journal 
                     (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                     ts TEXT, 
-                     category TEXT, 
-                     entry TEXT)''')
+                     ts TEXT, category TEXT, entry TEXT)''')
     conn.close()
 
 def save_journal_entry(category, text):
@@ -54,45 +56,48 @@ def load_signals(db_path):
     if not os.path.exists(db_path): return pd.DataFrame()
     try:
         conn = sqlite3.connect(db_path)
-        df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 50", conn)
+        df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 100", conn)
         conn.close()
+        # Handle column naming inconsistencies
         if "conf" in df.columns and "confidence" not in df.columns:
             df = df.rename(columns={"conf": "confidence"})
         if "reason" not in df.columns:
-            df["reason"] = "LEGACY"
+            df["reason"] = "N/A"
         return df
     except: return pd.DataFrame()
 
 # --- INITIALIZE ---
 init_journal()
 
-# --- HEADER & STATS ---
+# --- HEADER & GLOBAL METRICS ---
 st.title("🛡️ Nexus Intelligence Suite: Visual Command")
-st.markdown(f"**System Status:** Statistical Auditing Active | **Last Sync:** {datetime.now().strftime('%H:%M:%S')}")
+st.markdown(f"**System Status:** Full Auditing Enabled | **Local Time:** {datetime.now().strftime('%H:%M:%S')}")
 
 perf_data = {}
 if os.path.exists(PERFORMANCE_FILE):
-    with open(PERFORMANCE_FILE, "r") as f: perf_data = json.load(f)
+    try:
+        with open(PERFORMANCE_FILE, "r") as f: perf_data = json.load(f)
+    except: pass
 
 m_cols = st.columns(len(DB_FILES))
 for i, (name, db_file) in enumerate(DB_FILES.items()):
     strat_id = db_file.replace(".db", "")
-    stats = perf_data.get(strat_id, {"win_rate": 0.0, "status": "LIVE", "sample_size": 0})
+    stats = perf_data.get(strat_id, {"win_rate": 0.0, "sample_size": 0})
     wr, ss = stats.get("win_rate", 0), stats.get("sample_size", 0)
     trust = round((wr * math.sqrt(ss)) / 10, 1) if ss > 0 else 0.0
     with m_cols[i]:
         st.subheader(name)
-        st.metric("Trust Score", f"{trust}/100", f"{wr}% Win Rate")
+        st.metric("Trust Score", f"{trust}/100", f"{wr}% WR ({ss} Trades)")
         st.progress(min(trust/100, 1.0))
 
 st.divider()
 
-# --- SECTION 1: CONFLUENCE & JOURNAL ---
-col_j1, col_j2 = st.columns([1, 1])
+# --- SECTION 1: CONFLUENCE & JOURNALING ---
+col_left, col_right = st.columns([1, 1])
 
-with col_j1:
-    st.subheader("💎 Confluence (Engine Agreement)")
-    all_dfs = {name: load_signals(db) for name, db in DB_FILES.items()}
+with col_left:
+    st.subheader("💎 Market Confluence (Diamond Checker)")
+    all_dfs = {name: load_signals(path) for name, path in DB_FILES.items()}
     master_list = []
     for name, df in all_dfs.items():
         if not df.empty:
@@ -106,38 +111,49 @@ with col_j1:
             'Engine': 'count', 
             'confidence': 'mean', 
             'reason': lambda x: ' | '.join(x.unique())
-        }).reset_index().rename(columns={'Engine': 'Agreements', 'confidence': 'Avg_Conf'})
-        
-        # Highlight Diamond (4) and Gold (3)
-        st.dataframe(consensus.sort_values('Agreements', ascending=False), use_container_width=True, hide_index=True)
+        }).reset_index().rename(columns={'Engine': 'Matches', 'confidence': 'Avg_Conf'})
+        st.dataframe(consensus.sort_values('Matches', ascending=False), use_container_width=True, hide_index=True)
     else:
         st.info("Scanning for engine alignment...")
 
-with col_j2:
-    st.subheader("📓 Observation Journal")
+with col_right:
+    st.subheader("📓 Digital Observation Journal")
     with st.expander("📝 Log New Entry", expanded=False):
-        cat = st.selectbox("Type", ["Market Observation", "Diamond Audit", "AI Note", "Error"])
-        note = st.text_area("Observations")
-        if st.button("Save Entry"):
+        cat = st.selectbox("Category", ["Market Observation", "Diamond Audit", "AI Accuracy Note", "System Error"])
+        note = st.text_area("Your Observation")
+        if st.button("Save to Database"):
             if note:
                 save_journal_entry(cat, note)
                 st.success("Saved!")
                 st.rerun()
-    
-    search = st.text_input("🔍 Search Logs", placeholder="BTC, Diamond, etc.")
+
+    search = st.text_input("🔍 Search Past Notes", placeholder="e.g. BTC, Short, Diamond")
     history = load_journal(search)
-    st.dataframe(history, use_container_width=True, hide_index=True, height=200)
+    
+    if not history.empty:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.download_button("📥 Export CSV", convert_df_to_csv(history), "nexus_journal.csv", "text/csv")
+        with c2:
+            if st.button("📤 Forward to Discord"):
+                history.to_csv("temp_journal.csv", index=False)
+                try:
+                    from nexus_reporter import forward_to_discord
+                    forward_to_discord("temp_journal.csv", f"Journal Export - {search if search else 'All'}")
+                    st.success("Sent to Discord!")
+                except: st.error("Reporter script not found.")
+        st.dataframe(history, use_container_width=True, hide_index=True, height=180)
 
 st.divider()
 
-# --- SECTION 2: NEURAL NETWORK SIMULATOR ---
+# --- SECTION 2: AI NEURAL SIMULATOR ---
 st.subheader("🧠 Neural Network Simulator (AI Gatekeeper)")
 s1, s2, s3 = st.columns(3)
-with s1: t_rsi = st.slider("Current RSI", 0.0, 100.0, 50.0)
+with s1: t_rsi = st.slider("Current RSI", 0, 100, 50)
 with s2: t_vol = st.number_input("Volume % Change (1h)", value=0.0, step=0.1)
 with s3: t_dist = st.slider("Distance from EMA20 (%)", -10.0, 10.0, 0.0)
 
-if st.button("🔮 Run AI Prediction"):
+if st.button("🔮 Run Live Prediction"):
     if os.path.exists(MODEL_FILE):
         with open(MODEL_FILE, "rb") as f:
             model, scaler = pickle.load(f)
@@ -146,30 +162,40 @@ if st.button("🔮 Run AI Prediction"):
         res = "BULLISH" if prob > 0.5 else "BEARISH"
         st.markdown(f"### Result: :{'green' if res=='BULLISH' else 'red'}[{res}] ({round(prob*100,2)}% Confidence)")
         st.progress(prob)
-    else: st.error("Model file not found. Ensure train_brain.py has run.")
+    else: st.error("Brain file (nexus_brain.pkl) not found. Run train_brain.py.")
 
 st.divider()
 
-# --- SECTION 3: ANALYTICS & RAW FEED ---
-t_visuals, t_raw = st.tabs(["📊 Performance Visuals", "📡 Live Signal Feed"])
+# --- SECTION 3: ANALYTICS & RAW DATA ---
+tab_v, tab_f = st.tabs(["📊 Performance Analytics", "📡 Live Signal Feed"])
 
-if master_list:
-    full_df = pd.concat([df.assign(Engine=n) for n, df in all_dfs.items() if not df.empty])
-    full_df = full_df.sort_values('ts', ascending=False)
-    
-    with t_visuals:
-        fig = px.scatter(full_df, x="ts", y="confidence", color="reason", 
-                         title="Signal Conviction by Technical Reason",
-                         hover_data=["asset", "Engine", "signal"])
+all_raw = pd.concat([df.assign(Engine=n) for n, df in all_dfs.items() if not df.empty]) if all_dfs else pd.DataFrame()
+
+with tab_v:
+    if not all_raw.empty:
+        fig = px.scatter(all_raw, x="ts", y="confidence", color="Engine", 
+                         title="Signal Distribution & Conviction", hover_data=["asset", "reason"])
         st.plotly_chart(fig, use_container_width=True)
         
-        fig2 = px.histogram(full_df, x="asset", color="Engine", barmode="group", title="Engine Activity by Asset")
+        fig2 = px.histogram(all_raw, x="asset", color="Engine", barmode="group", title="Asset Activity by Engine")
         st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.info("Awaiting market data for visualization.")
 
-    with t_raw:
-        st.dataframe(full_df[["ts", "Engine", "asset", "signal", "confidence", "reason", "entry", "sl", "tp"]].head(50), 
-                     use_container_width=True, hide_index=True)
-else:
-    st.warning("No data found in engine databases.")
+with tab_f:
+    if not all_raw.empty:
+        cf1, cf2 = st.columns([1, 4])
+        with cf1:
+            st.download_button("📥 Export Feed", convert_df_to_csv(all_raw), "nexus_signals.csv", "text/csv")
+        with cf2:
+            if st.button("📤 Forward Signal Feed to Discord"):
+                all_raw.to_csv("temp_signals.csv", index=False)
+                try:
+                    from nexus_reporter import forward_to_discord
+                    forward_to_discord("temp_signals.csv", "Full Master Signal Feed")
+                    st.success("Feed sent to Discord!")
+                except: st.error("Reporter script missing.")
+        
+        st.dataframe(all_raw.sort_values('ts', ascending=False), use_container_width=True, hide_index=True)
 
-if st.sidebar.button("🔄 Refresh Data"): st.rerun()
+if st.sidebar.button("🔄 Global System Refresh"): st.rerun()
