@@ -44,13 +44,21 @@ def save_journal_entry(category, text):
 def load_journal(search_term=""):
     if not os.path.exists(JOURNAL_DB): return pd.DataFrame()
     conn = sqlite3.connect(JOURNAL_DB)
-    query = "SELECT ts as 'Time', category as 'Type', entry as 'Observation' FROM journal"
+    base_query = "SELECT ts as 'Time', category as 'Type', entry as 'Observation' FROM journal"
+    params = []
+    
     if search_term:
-        query += f" WHERE entry LIKE '%{search_term}%' OR category LIKE '%{search_term}%'"
-    query += " ORDER BY id DESC"
-    df = pd.read_sql_query(query, conn)
+        base_query += " WHERE entry LIKE ? OR category LIKE ?"
+        params = [f"%{search_term}%", f"%{search_term}%"]
+    
+    base_query += " ORDER BY id DESC"
+    
+    df = pd.read_sql_query(base_query, conn, params=params)
     conn.close()
     return df
+
+# Usage in the dashboard remains the same:
+history = load_journal(st.text_input("🔍 Search Logs"))
 
 def load_signals(db_path):
     if not os.path.exists(db_path): return pd.DataFrame()
