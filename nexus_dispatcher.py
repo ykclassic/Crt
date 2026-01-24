@@ -1,70 +1,60 @@
-import pandas as pd
 import sqlite3
-import ccxt
-from datetime import datetime
+import pandas as pd
+import requests
 import os
+from datetime import datetime, timedelta
 
-# --- CONFIG ---
-SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'ADA/USDT']
-TIMEFRAME = '1h'
-DB_NAME = "nexus_core.db"
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+DB_FILES = ["nexus_core.db", "hybrid_v1.db", "rangemaster.db", "nexus_ai.db"]
 
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    conn.execute('''CREATE TABLE IF NOT EXISTS signals 
-                    (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                     asset TEXT, signal TEXT, confidence REAL, 
-                     reason TEXT, ts TEXT)''')
-    conn.close()
-
-def fetch_data(symbol):
+def send_to_discord(msg):
+    if not WEBHOOK_URL: return
     try:
-        exchange = ccxt.binance()
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=50)
-        df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-        return df
+        requests.post(WEBHOOK_URL, json={"content": msg})
     except Exception as e:
-        print(f"⚠️ Exchange Fetch Error ({symbol}): {e}")
-        return None
+        print(f"Failed to post to Discord: {e}")
 
-def run_engine():
-    init_db()
-    print(f"🚀 Core Engine Pulse: {datetime.now()}")
-    found_any = False
+def dispatch_alerts():
+    print(f"📡 Nexus Dispatcher Active: {datetime.now()}")
+    new_signals = []
+    
+    # Check for signals generated in the last 65 minutes (to cover the hourly trigger)
+    lookback_time = (datetime.now() - timedelta(minutes=65)).isoformat()
 
-    for symbol in SYMBOLS:
-        df = fetch_data(symbol)
-        if df is None or len(df) < 20: continue
-        
-        # Simple Logic: EMA Cross + RSI
-        df['ema20'] = df['c'].ewm(span=20).mean()
-        df['rsi'] = 50 # Placeholder for TA library or manual calc
-        
-        last_price = df['c'].iloc[-1]
-        prev_ema = df['ema20'].iloc[-2]
-        curr_ema = df['ema20'].iloc[-1]
-        
-        signal = None
-        reason = ""
-        
-        if last_price > curr_ema and last_price > prev_ema:
-            signal = "LONG"
-            reason = "Price Above EMA20"
-        elif last_price < curr_ema and last_price < prev_ema:
-            signal = "SHORT"
-            reason = "Price Below EMA20"
-
-        if signal:
-            conn = sqlite3.connect(DB_NAME)
-            conn.execute("INSERT INTO signals (asset, signal, confidence, reason, ts) VALUES (?, ?, ?, ?, ?)",
-                         (symbol, signal, 70.0, reason, datetime.now().isoformat()))
-            conn.commit()
+    for db_file in DB_FILES:
+        if not os.path.exists(db_file): continue
+        try:
+            conn = sqlite3.connect(db_file)
+            query = f"SELECT * FROM signals WHERE ts > '{lookback_time}'"
+            df = pd.read_sql_query(query, conn)
+            if not df.empty:
+                df['engine'] = db_file.replace(".db", "")
+                new_signals.append(df)
             conn.close()
-            print(f"✅ {signal} Signal Found for {symbol}")
-            found_any = True
+        except Exception as e:
+            print(f"Error reading {db_file}: {e}")
+
+    if new_signals:
+        master = pd.concat(new_signals)
+        # Drop duplicates in case multiple runs happen
+        master = master.drop_duplicates(subset=['asset', 'signal', 'ts'])
+        
+        for _, row in master.iterrows():
+            emoji = "🟢" if row['signal'].upper() == "LONG" else "🔴"
+            conf = row.get('confidence', 0)
+            reason = row.get('reason', 'Technical Assessment')
             
-    if not found_any:
-        print("😴 No signals met criteria this cycle.")
+            msg = (f"🛡️ **NEXUS SIGNAL ALERT**\n"
+                   f"----------------------------\n"
+                   f"Asset: **{row['asset']}**\n"
+                   f"Signal: {emoji} **{row['signal']}**\n"
+                   f"Engine: `{row['engine']}`\n"
+                   f"Confidence: `{conf}%`\n"
+                   f"Reason: *{reason}*")
+            send_to_discord(msg)
+            print(f"📢 Dispatch sent for {row['asset']}")
+    else:
+        print("📭 No new signals to report in this window.")
 
 if __name__ == "__main__":
-    run_engine()
+    dispatch_alerts()
