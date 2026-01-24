@@ -3,32 +3,24 @@ import pandas as pd
 import ccxt
 import json
 import os
+import logging
 from datetime import datetime
+from config import DB_FILE, PERFORMANCE_FILE, ENGINES
 
-# --- CONFIGURATION ---
-DB_FILES = {
-    "nexus_core": "nexus_core.db",
-    "hybrid_v1": "hybrid_v1.db",
-    "rangemaster": "rangemaster.db",
-    "nexus_ai": "nexus_ai.db"
-}
-PERFORMANCE_FILE = "performance.json"
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
-# Thresholds for the Kill Switch
-KILL_THRESHOLD = 40.0    # Drop below this → RECOVERY (on closed trades)
-RECOVERY_THRESHOLD = 50.0 # Climb above this → LIVE
+# Thresholds
+KILL_THRESHOLD = 40.0
+RECOVERY_THRESHOLD = 50.0
 
-# Audit settings
 MAX_SIGNALS_PER_ENGINE = 100
-MAX_CANDLES_LOOKFORWARD = 500  # ~3 weeks on 1h, prevents hanging on very wide SL/TP
+MAX_CANDLES_LOOKFORWARD = 500
 
 def determine_outcome(row, ex):
-    """Fetch historical candles after signal and check TP/SL hit order."""
     try:
-        signal_ts = datetime.fromisoformat(row['ts'])
-        since_ms = int(signal_ts.timestamp() * 1000) + 1  # Start from next millisecond
+        signal_ts = datetime.fromisoformat(row['ts'].replace('Z', '+00:00') if 'Z' in row['ts'] else row['ts'])
+        since_ms = int(signal_ts.timestamp() * 1000) + 1
 
-        # Fetch candles after signal
         ohlcv = ex.fetch_ohlcv(
             row['asset'],
             timeframe=row['timeframe'],
@@ -39,7 +31,6 @@ def determine_outcome(row, ex):
             return "ongoing"
 
         df_candles = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
-        df_candles['ts'] = pd.to_datetime(df_candles['ts'], unit='ms')
 
         entry = row['entry']
         sl = row['sl']
@@ -52,109 +43,89 @@ def determine_outcome(row, ex):
                     return "loss"
                 if candle['high'] >= tp:
                     return "win"
-            else:  # SHORT
+            else:
                 if candle['high'] >= sl:
                     return "loss"
                 if candle['low'] <= tp:
                     return "win"
 
-        return "ongoing"  # Neither hit within lookforward
+        return "ongoing"
     except Exception as e:
-        print(f"   ⚠️ Outcome check failed for {row['asset']} {row['ts']}: {e}")
+        logging.warning(f"Outcome check failed for {row['asset']} {row['engine']} {row['ts']}: {e}")
         return "skipped"
 
 def audit_all():
     ex = ccxt.xt({"enableRateLimit": True})
     performance_report = {}
 
-    # Load existing performance
     if os.path.exists(PERFORMANCE_FILE):
         try:
             with open(PERFORMANCE_FILE, "r") as f:
                 performance_report = json.load(f)
-        except:
-            performance_report = {}
+        except Exception as e:
+            logging.error(f"Failed to load performance file: {e}")
 
-    print(f"🔍 Starting intelligent audit across {len(DB_FILES)} engines...")
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        for strat_id in ENGINES.keys():
+            try:
+                df = pd.read_sql_query("""
+                    SELECT * FROM signals 
+                    WHERE engine = ? 
+                    ORDER BY id DESC LIMIT ?
+                """, conn, params=(strat_id, MAX_SIGNALS_PER_ENGINE))
 
-    for strat_id, db_path in DB_FILES.items():
-        if not os.path.exists(db_path):
-            print(f"   ⚠️ DB missing: {db_path}")
-            continue
+                if df.empty:
+                    logging.info(f"No signals for {strat_id}")
+                    continue
 
-        conn = sqlite3.connect(db_path)
-        try:
-            # Load recent signals
-            df = pd.read_sql_query(
-                "SELECT * FROM signals ORDER BY id DESC LIMIT ?",
-                conn, params=(MAX_SIGNALS_PER_ENGINE,)
-            )
-            if df.empty:
-                print(f"   ℹ️ No signals in {strat_id}")
-                continue
+                df['entry'] = pd.to_numeric(df['entry'], errors='coerce')
+                df['sl'] = pd.to_numeric(df['sl'], errors='coerce')
+                df['tp'] = pd.to_numeric(df['tp'], errors='coerce')
+                df = df.dropna(subset=['entry', 'sl', 'tp', 'timeframe', 'signal'])
 
-            # Ensure required columns exist and are numeric
-            required = ['entry', 'sl', 'tp', 'confidence']
-            if not all(col in df.columns for col in required):
-                print(f"   ⚠️ Incomplete schema in {strat_id} - skipping audit")
-                continue
+                wins = losses = ongoing = skipped = 0
 
-            df['entry'] = pd.to_numeric(df['entry'], errors='coerce')
-            df['sl'] = pd.to_numeric(df['sl'], errors='coerce')
-            df['tp'] = pd.to_numeric(df['tp'], errors='coerce')
-            df = df.dropna(subset=['entry', 'sl', 'tp', 'timeframe', 'signal'])
+                for _, row in df.iterrows():
+                    outcome = determine_outcome(row, ex)
+                    if outcome == "win": wins += 1
+                    elif outcome == "loss": losses += 1
+                    elif outcome == "ongoing": ongoing += 1
+                    else: skipped += 1
 
-            wins = 0
-            losses = 0
-            ongoing = 0
-            skipped = 0
+                closed_trades = wins + losses
+                wr = round((wins / closed_trades * 100), 2) if closed_trades > 0 else 50.0
 
-            print(f"   Auditing {len(df)} recent signals for {strat_id}...")
-
-            for _, row in df.iterrows():
-                outcome = determine_outcome(row, ex)
-                if outcome == "win":
-                    wins += 1
-                elif outcome == "loss":
-                    losses += 1
-                elif outcome == "ongoing":
-                    ongoing += 1
+                current_status = performance_report.get(strat_id, {}).get("status", "LIVE")
+                if current_status == "LIVE" and wr < KILL_THRESHOLD and closed_trades >= 5:
+                    new_status = "RECOVERY"
+                elif current_status == "RECOVERY" and wr >= RECOVERY_THRESHOLD and closed_trades >= 5:
+                    new_status = "LIVE"
                 else:
-                    skipped += 1
+                    new_status = current_status
 
-            closed_trades = wins + losses
-            wr = round((wins / closed_trades * 100), 2) if closed_trades > 0 else 50.0
-            sample_size = closed_trades
+                performance_report[strat_id] = {
+                    "win_rate": wr,
+                    "status": new_status,
+                    "closed_sample": closed_trades,
+                    "wins": wins,
+                    "losses": losses,
+                    "ongoing": ongoing,
+                    "last_audit": datetime.now().isoformat()
+                }
 
-            # Status logic (kill switch)
-            current_status = performance_report.get(strat_id, {}).get("status", "LIVE")
-            if current_status == "LIVE" and wr < KILL_THRESHOLD and sample_size >= 5:
-                new_status = "RECOVERY"
-            elif current_status == "RECOVERY" and wr >= RECOVERY_THRESHOLD and sample_size >= 5:
-                new_status = "LIVE"
-            else:
-                new_status = current_status
+                logging.info(f"{strat_id.upper()}: WR={wr}% ({wins}W/{losses}L, {ongoing} ongoing) → {new_status}")
 
-            performance_report[strat_id] = {
-                "win_rate": wr,
-                "status": new_status,
-                "closed_sample": sample_size,
-                "wins": wins,
-                "losses": losses,
-                "ongoing": ongoing,
-                "last_audit": datetime.now().isoformat()
-            }
+            except Exception as e:
+                logging.error(f"Error auditing {strat_id}: {e}")
 
-            print(f"   ✅ {strat_id}: WR={wr}% ({wins}W/{losses}L, {ongoing} ongoing) → {new_status}")
+    finally:
+        conn.close()
 
-        finally:
-            conn.close()
-
-    # Save updated performance
     with open(PERFORMANCE_FILE, "w") as f:
         json.dump(performance_report, f, indent=4)
 
-    print(f"✅ Audit Complete. {len(performance_report)} engines updated.")
+    logging.info(f"Audit complete. {len(performance_report)} engines updated.")
 
 if __name__ == "__main__":
     audit_all()
