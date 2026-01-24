@@ -58,24 +58,17 @@ def load_signals(db_path):
         conn = sqlite3.connect(db_path)
         df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 100", conn)
         conn.close()
-        
-        # Aggressive column standardization
         df.columns = [c.strip().lower() for c in df.columns]
-        
         if "conf" in df.columns and "confidence" not in df.columns:
             df = df.rename(columns={"conf": "confidence"})
-        
-        # Ensure confidence exists as a float
         if "confidence" not in df.columns:
             df["confidence"] = 0.0
         else:
-            df["confidence"] = pd.to_numeric(df["confidence"], errors='coerce').fillna(0.0)
-            
+            df["confidence"] = pd.to_numeric(df["confidence"], errors='coerce').fillna(0.0).round(2)
         if "reason" not in df.columns:
             df["reason"] = "Legacy Signal"
         else:
-            df["reason"] = df["reason"].fillna("Legacy Signal").replace("", "Legacy Signal")
-            
+            df["reason"] = df["reason"].fillna("Technical Evaluation").replace("", "Technical Evaluation")
         return df
     except:
         return pd.DataFrame()
@@ -110,7 +103,7 @@ for i, (name, db_file) in enumerate(DB_FILES.items()):
     wr, ss = stats.get("win_rate", 0), stats.get("sample_size", 0)
     trust = round((wr * math.sqrt(ss)) / 10, 1) if ss > 0 else 0.0
     with m_cols[i]:
-        st.metric(name, f"{trust}/100", f"{wr}% WR")
+        st.metric(name, f"{trust}/100", f"{wr}% WR ({ss} Trades)")
         st.progress(min(trust/100, 1.0))
 
 st.divider()
@@ -125,19 +118,16 @@ with c_left:
     
     if master_list:
         m_df = pd.concat(master_list)
-        # Ensure consistent types for groupby
         m_df['asset'] = m_df['asset'].astype(str)
         m_df['signal'] = m_df['signal'].astype(str)
         
         consensus = m_df.groupby(['asset', 'signal']).agg({
             'Engine': 'count', 
             'confidence': 'mean', 
-            'reason': lambda x: ' + '.join([str(r) for r in x.unique() if r != "Legacy Signal"]) or "Legacy Signal"
+            'reason': lambda x: ' + '.join([str(r) for r in x.unique() if r not in ["Legacy Signal", "Technical Evaluation"]]) or "Technical Evaluation"
         }).reset_index().rename(columns={'Engine': 'Matches', 'confidence': 'Avg_Conf', 'reason': 'Technical_Confluence'})
         
         consensus['Avg_Conf'] = consensus['Avg_Conf'].round(2)
-        
-        # Safer Styler for Confluence
         st.dataframe(consensus.sort_values('Matches', ascending=False), use_container_width=True, hide_index=True)
     else:
         st.info("Awaiting market data confluence...")
@@ -181,7 +171,6 @@ st.subheader("📡 Intelligence Feed & Signal Exports")
 
 if master_list:
     full_signals = pd.concat(master_list).sort_values('ts', ascending=False)
-    
     ec1, ec2, _ = st.columns([2, 2, 5])
     with ec1:
         st.download_button("📥 Download All Signals", convert_df_to_csv(full_signals), "nexus_signals.csv")
@@ -190,22 +179,16 @@ if master_list:
             discord_forward_helper(full_signals, "Master Signal Feed Audit")
     
     tab_vis, tab_raw = st.tabs(["📊 Performance Visuals", "📜 Raw Signal Data"])
-    
     with tab_vis:
         st.plotly_chart(px.scatter(full_signals, x="ts", y="confidence", color="Engine", hover_data=["asset"]), use_container_width=True)
-    
     with tab_raw:
-        # THE MOST ROBUST STYLING APPROACH
         def apply_row_style(row):
             conf = row.get('confidence', 0)
             color = 'color: #00ff00' if conf > 80 else 'color: #ff4b4b' if conf < 60 else 'color: white'
             return [color] * len(row)
-
         try:
-            # We apply the style row-wise to prevent KeyError on specific columns
             st.dataframe(full_signals.style.apply(apply_row_style, axis=1), use_container_width=True, hide_index=True)
         except:
-            # Fallback to unstyled if Pandas Styler fails again
             st.dataframe(full_signals, use_container_width=True, hide_index=True)
 else:
     st.warning("Awaiting signal data...")
