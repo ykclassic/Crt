@@ -1,68 +1,46 @@
-import sqlite3
-import pandas as pd
 import requests
 import os
-import json
+import pandas as pd
 from datetime import datetime
 
-# --- CONFIGURATION ---
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-DB_FILES = {
-    "nexus_core": "nexus_core.db",
-    "hybrid_v1": "hybrid_v1.db",
-    "rangemaster": "rangemaster.db",
-    "nexus_ai": "nexus_ai.db",
-    "journal": "nexus_journal.db"
-}
 
-def send_to_discord(filename, title):
-    if not WEBHOOK_URL:
-        print("Error: No Discord Webhook URL found.")
+def forward_to_discord(filepath, title="Custom Report"):
+    """Forwards ANY file to Discord instantly."""
+    if not os.path.exists(filepath):
+        print(f"File {filepath} not found.")
         return
+    
+    with open(filepath, "rb") as f:
+        payload = {"content": f"📤 **Nexus Dispatch**: {title}"}
+        files = {"file": (os.path.basename(filepath), f, "text/csv")}
+        requests.post(WEBHOOK_URL, data=payload, files=files)
+    print(f"Sent {filepath} to Discord.")
 
-    try:
-        with open(filename, "rb") as f:
-            payload = {"content": f"📊 **{title}**\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"}
-            files = {"file": (filename, f, "text/csv")}
-            response = requests.post(WEBHOOK_URL, data=payload, files=files)
-            
-        if response.status_code in [200, 204]:
-            print(f"Successfully forwarded {filename} to Discord.")
-            return True
-        else:
-            print(f"Discord error: {response.status_code}")
-    except Exception as e:
-        print(f"Failed to send report: {e}")
-    return False
-
-def generate_consolidated_report(report_type="Nexus System Report"):
-    all_data = []
-    for engine, db_path in DB_FILES.items():
-        if os.path.exists(db_path):
-            try:
-                conn = sqlite3.connect(db_path)
-                table_name = "journal" if "journal" in engine else "signals"
-                df = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
-                df['source_engine'] = engine
-                all_data.append(df)
-                conn.close()
-            except Exception as e:
-                print(f"Error reading {engine}: {e}")
-
-    if all_data:
-        master_df = pd.concat(all_data, ignore_index=True)
-        filename = f"{report_type.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.csv"
-        master_df.to_csv(filename, index=False)
-        
-        # Forward to Discord
-        send_to_discord(filename, report_type)
-        
-        # Cleanup
-        if os.path.exists(filename):
-            os.remove(filename)
-    else:
-        print("No data available to generate report.")
+def generate_full_report(type_label="System Snapshot"):
+    """Gathers all signals into one master CSV and sends it."""
+    dbs = ["nexus_core.db", "hybrid_v1.db", "rangemaster.db", "nexus_ai.db"]
+    frames = []
+    for db in dbs:
+        if os.path.exists(db):
+            import sqlite3
+            conn = sqlite3.connect(db)
+            df = pd.read_sql_query("SELECT * FROM signals", conn)
+            df['engine'] = db.replace(".db", "")
+            frames.append(df)
+            conn.close()
+    
+    if frames:
+        master = pd.concat(frames)
+        fname = f"Nexus_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
+        master.to_csv(fname, index=False)
+        forward_to_discord(fname, type_label)
+        os.remove(fname)
 
 if __name__ == "__main__":
-    # If run directly, generate a general system report
-    generate_consolidated_report()
+    import sys
+    # Usage: python nexus_reporter.py --full or --forward path/to/file.csv
+    if "--full" in sys.argv:
+        generate_full_report("Automated System Audit")
+    elif "--forward" in sys.argv and len(sys.argv) > 2:
+        forward_to_discord(sys.argv[2], "Manual Dashboard Export")
