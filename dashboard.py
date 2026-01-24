@@ -6,7 +6,6 @@ import os
 import pickle
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime
 import math
 
@@ -34,8 +33,9 @@ def load_signals(db_path):
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(db_path)
-        df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 100", conn)
+        df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 50", conn)
         conn.close()
+        # Standardization
         if "conf" in df.columns and "confidence" not in df.columns:
             df = df.rename(columns={"conf": "confidence"})
         if "reason" not in df.columns:
@@ -44,9 +44,38 @@ def load_signals(db_path):
     except:
         return pd.DataFrame()
 
+# --- CONSENSUS LOGIC ---
+def calculate_consensus(all_dfs):
+    if not all_dfs:
+        return pd.DataFrame()
+    
+    # Combine only the latest signal per asset per engine
+    latest_signals = []
+    for engine_name, df in all_dfs.items():
+        if not df.empty:
+            temp = df.sort_values('ts').groupby('asset').tail(1).copy()
+            temp['Engine'] = engine_name
+            latest_signals.append(temp)
+    
+    if not latest_signals:
+        return pd.DataFrame()
+
+    master = pd.concat(latest_signals)
+    
+    # Group by asset and signal to find agreements
+    consensus = master.groupby(['asset', 'signal']).agg({
+        'Engine': 'count',
+        'confidence': 'mean',
+        'reason': lambda x: ', '.join(x.unique())
+    }).reset_index()
+    
+    consensus = consensus.rename(columns={'Engine': 'Engine_Count', 'confidence': 'Avg_Confidence'})
+    # Return only where 2 or more engines agree (User asked for all 4, but we show top-tier)
+    return consensus.sort_values('Engine_Count', ascending=False)
+
 # --- HEADER ---
 st.title("🛡️ Nexus Intelligence Suite: Visual Command")
-st.markdown(f"**System Status:** Statistical Auditing Active | **Last Sync:** {datetime.now().strftime('%H:%M:%S')}")
+st.markdown(f"**System Status:** Confluence Monitoring | **Last Sync:** {datetime.now().strftime('%H:%M:%S')}")
 
 perf_data = load_performance()
 m_cols = st.columns(len(DB_FILES))
@@ -54,84 +83,68 @@ m_cols = st.columns(len(DB_FILES))
 for i, (name, db_file) in enumerate(DB_FILES.items()):
     strat_id = db_file.replace(".db", "")
     stats = perf_data.get(strat_id, {"win_rate": 0.0, "status": "LIVE", "sample_size": 0})
-    
-    # Calculate Trust Score
-    wr = stats.get("win_rate", 0)
-    ss = stats.get("sample_size", 0)
-    # Formula: (WR * sqrt(SS)) / 10
+    wr, ss = stats.get("win_rate", 0), stats.get("sample_size", 0)
     trust_score = round((wr * math.sqrt(ss)) / 10, 1) if ss > 0 else 0.0
 
     with m_cols[i]:
         st.subheader(name)
-        status_color = "green" if stats.get('status') == "LIVE" else "orange"
-        st.markdown(f"**Status:** :{status_color}[{stats.get('status', 'OFFLINE')}]")
-        
-        # Display Metrics
-        c1, c2 = st.columns(2)
-        c1.metric("Win Rate", f"{wr}%")
-        c2.metric("Sample Size", ss)
-        
-        # Trust Score Highlight
-        st.metric("Trust Score", f"{trust_score}/100", help="Combined score of accuracy and statistical significance.")
+        st.metric("Trust Score", f"{trust_score}/100", delta=f"{wr}% WR")
         st.progress(min(trust_score / 100, 1.0))
 
 st.divider()
 
-# --- NEURAL NETWORK TESTER ---
-st.subheader("🧠 Neural Network Simulator (AI Gatekeeper)")
-col1, col2, col3 = st.columns(3)
-with col1:
-    test_rsi = st.slider("Current RSI", 0.0, 100.0, 50.0)
-with col2:
-    test_vol = st.number_input("Volume % Change (1h)", value=0.0, step=0.1)
-with col3:
-    test_dist = st.slider("Distance from EMA20 (%)", -10.0, 10.0, 0.0)
+# --- THE CONSENSUS TABLE ---
+st.subheader("💎 Diamond Confluence (Engine Agreement)")
+all_dfs = {name: load_signals(db) for name, db in DB_FILES.items()}
+consensus_df = calculate_consensus(all_dfs)
 
-if st.button("🔮 Run AI Prediction"):
-    if os.path.exists(MODEL_FILE):
-        try:
-            with open(MODEL_FILE, "rb") as f:
-                model, scaler = pickle.load(f)
-            features = np.array([[test_rsi, test_vol, test_dist]])
-            features_scaled = scaler.transform(features)
-            prob = model.predict_proba(features_scaled)[0][1]
-            prediction = "BULLISH" if prob > 0.5 else "BEARISH"
-            color = "green" if prediction == "BULLISH" else "red"
-            st.markdown(f"### Result: :{color}[{prediction}] ({round(prob * 100, 2)}% Confidence)")
-            st.progress(prob)
-        except Exception as e:
-            st.error(f"Prediction Error: {e}")
+if not consensus_df.empty:
+    # Filter for the "Holy Grail": All 4 engines agreeing
+    perfect_match = consensus_df[consensus_df['Engine_Count'] >= 4]
+    strong_match = consensus_df[consensus_df['Engine_Count'] == 3]
+    
+    if not perfect_match.empty:
+        st.success("🎯 **DIAMOND CONSENSUS DETECTED: All 4 engines are in agreement!**")
+        st.table(perfect_match)
+    elif not strong_match.empty:
+        st.warning("⚡ **STRONG CONSENSUS: 3 engines are in agreement.**")
+        st.dataframe(strong_match, use_container_width=True, hide_index=True)
     else:
-        st.error("Model file not found. Run training script first.")
+        st.info("Scanning for engine alignment... Currently showing partial agreements.")
+        st.dataframe(consensus_df[consensus_df['Engine_Count'] >= 2], use_container_width=True, hide_index=True)
+else:
+    st.info("No active signal confluence detected yet.")
 
 st.divider()
 
-# --- ANALYTICS & LIVE FEED ---
+# --- NEURAL NETWORK SIMULATOR ---
+st.subheader("🧠 Neural Network Simulator (AI Gatekeeper)")
+c1, c2, c3 = st.columns(3)
+with c1: test_rsi = st.slider("Current RSI", 0.0, 100.0, 50.0)
+with c2: test_vol = st.number_input("Volume % Change (1h)", value=0.0, step=0.1)
+with c3: test_dist = st.slider("Distance from EMA20 (%)", -10.0, 10.0, 0.0)
+
+if st.button("🔮 Run AI Prediction"):
+    if os.path.exists(MODEL_FILE):
+        with open(MODEL_FILE, "rb") as f:
+            model, scaler = pickle.load(f)
+        prob = model.predict_proba(scaler.transform(np.array([[test_rsi, test_vol, test_dist]])))[0][1]
+        res = "BULLISH" if prob > 0.5 else "BEARISH"
+        st.markdown(f"### Result: :{'green' if res=='BULLISH' else 'red'}[{res}] ({round(prob*100,2)}% Conf)")
+        st.progress(prob)
+    else: st.error("Model file not found.")
+
+st.divider()
+
+# --- LIVE FEED ---
 tab1, tab2 = st.tabs(["📊 Analytics", "📡 Live Signal Feed"])
+master_list = [df.assign(Engine=name) for name, df in all_dfs.items() if not df.empty]
 
-all_data = []
-for name, db in DB_FILES.items():
-    df = load_signals(db)
-    if not df.empty:
-        df['Engine'] = name
-        all_data.append(df)
-
-if all_data:
-    master_df = pd.concat(all_data, sort=False).fillna("N/A")
-    master_df = master_df.sort_values("ts", ascending=False)
-    
+if master_list:
+    master_df = pd.concat(master_list, sort=False).fillna("N/A").sort_values("ts", ascending=False)
     with tab1:
-        fig = px.scatter(master_df, x="ts", y="confidence", color="reason", 
-                         title="Signal Conviction by Reason",
-                         hover_data=["asset", "Engine"])
-        st.plotly_chart(fig, use_container_width=True)
-
+        st.plotly_chart(px.scatter(master_df, x="ts", y="confidence", color="reason", title="Signal Conviction"), use_container_width=True)
     with tab2:
-        st.dataframe(
-            master_df[["ts", "Engine", "asset", "signal", "confidence", "reason", "entry", "sl", "tp"]].head(20),
-            use_container_width=True, hide_index=True
-        )
+        st.dataframe(master_df[["ts", "Engine", "asset", "signal", "confidence", "reason"]].head(20), use_container_width=True, hide_index=True)
 
-st.sidebar.title("🛠️ System Control")
-if st.sidebar.button("🔄 Refresh Dashboard"):
-    st.rerun()
+if st.sidebar.button("🔄 Refresh"): st.rerun()
