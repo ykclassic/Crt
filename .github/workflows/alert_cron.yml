@@ -2,10 +2,11 @@ name: Nexus Intelligence Suite
 
 on:
   schedule:
-    - cron: '0 * * * *'      # Hourly Trading & AI Training
-    - cron: '0 20 * * 0'     # Weekly Report: Every Sunday 8PM UTC
-    - cron: '0 20 1 * *'     # Monthly Report: 1st of the month 8PM UTC
-  workflow_dispatch:          # Allows you to click "Run" for an instant report
+    - cron: '0 * * * *'       # Hourly: Run all engines + consensus + dispatcher
+    - cron: '0 0 * * *'       # Daily: Retrain AI brain (midnight UTC)
+    - cron: '0 20 * * 0'      # Weekly Report: Every Sunday 8PM UTC
+    - cron: '0 20 1 * *'      # Monthly Report: 1st of the month 8PM UTC
+  workflow_dispatch:         # Manual trigger for instant run/report
 
 jobs:
   nexus-ops:
@@ -13,32 +14,66 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Python Setup
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      - name: Deps
-        run: pip install pandas requests ccxt scikit-learn plotly streamlit
-      
-      - name: Execute Intelligence
+          python-version: '3.12'  # Updated to latest stable
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas ccxt requests plotly streamlit \
+                      numpy xgboost scikit-learn
+
+      - name: Hourly Intelligence Cycle
+        if: github.event_name == 'schedule' && github.event.schedule == '0 * * * *'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          python train_brain.py
-          python run_consensus.py
-          python sanity_check.py
-          
-          # Scheduled Reporting Logic
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            python nexus_reporter.py --full
-          elif [[ "${{ github.event.schedule }}" == "0 20 * * 0" ]]; then
-            python nexus_reporter.py --full
-          fi
+          # Run all strategy engines (generate fresh signals)
+          python run_alerts.py          # Core
+          python hybrid_engine.py       # Hybrid V1
+          python range_engine.py        # Rangemaster
+          python ai_engine.py           # AI Predict
 
-      - name: Sync Data
+          # Detect and alert on consensus
+          python run_consensus.py
+
+          # Dispatch any individual signals (optional - remove if you only want consensus alerts)
+          python nexus_dispatcher.py
+
+          # Audit performance (recommended hourly for adaptive kill-switch)
+          python audit_intelligence.py
+
+      - name: Daily AI Retraining
+        if: github.event_name == 'schedule' && github.event.schedule == '0 0 * * *'
+        run: |
+          python train_brain.py
+
+      - name: Generate & Send Reports
+        if: >
+          github.event_name == 'workflow_dispatch' ||
+          github.event.schedule == '0 20 * * 0' ||
+          github.event.schedule == '0 20 1 * *'
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          # Generate full system report and forward to Discord
+          python nexus_reporter.py --full
+
+          # Optional: Run sanity check before reporting
+          python sanity_check.py
+
+      - name: Daily Maintenance
+        if: github.event_name == 'schedule' && github.event.schedule == '0 0 * * *'
+        run: |
+          python maintenance.py
+
+      - name: Sync Data to Repo
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git add *.db *.json *.pkl
-          git commit -m "Intelligence Sync" || echo "No changes"
+          
+          git add nexus.db nexus_journal.db performance.json nexus_brain.pkl
+          git commit -m "Auto-sync: Intelligence data update $(date +'%Y-%m-%d %H:%M UTC')" || echo "No changes to commit"
           git push
