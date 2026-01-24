@@ -3,62 +3,96 @@ import pandas as pd
 import ccxt
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- CONFIG ---
-DB_FILES = ["nexus_core.db", "hybrid_v1.db", "rangemaster.db", "nexus_ai.db"]
+# --- CONFIGURATION ---
+DB_FILES = {
+    "nexus_core": "nexus_core.db",
+    "hybrid_v1": "hybrid_v1.db",
+    "rangemaster": "rangemaster.db",
+    "nexus_ai": "nexus_ai.db"
+}
 PERFORMANCE_FILE = "performance.json"
-KILL_THRESHOLD = 40.0    # Go to Recovery if WR < 40%
-RECOVERY_THRESHOLD = 50.0 # Return to Live if WR > 50%
+# Thresholds for the Kill Switch
+KILL_THRESHOLD = 40.0    # Drop below this? Go to RECOVERY
+RECOVERY_THRESHOLD = 50.0 # Climb above this? Go back to LIVE
 
 def audit_all():
-    ex = ccxt.xt()
+    # Initialize XT Exchange for price verification
+    ex = ccxt.xt({"enableRateLimit": True})
     performance_report = {}
-    
-    # Load existing status if available
+
+    # 1. Load existing performance data if it exists
     if os.path.exists(PERFORMANCE_FILE):
-        with open(PERFORMANCE_FILE, "r") as f:
-            performance_report = json.load(f)
-
-    for db_file in DB_FILES:
-        if not os.path.exists(db_file): continue
-        strategy_id = db_file.replace(".db", "")
-        
-        conn = sqlite3.connect(db_file)
         try:
-            df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 30", conn)
-            if df.empty: continue
+            with open(PERFORMANCE_FILE, "r") as f:
+                performance_report = json.load(f)
+        except:
+            performance_report = {}
 
-            wins, losses = 0, 0
+    for strat_id, db_path in DB_FILES.items():
+        if not os.path.exists(db_path):
+            continue
+        
+        conn = sqlite3.connect(db_path)
+        try:
+            # Load last 50 signals for auditing
+            df = pd.read_sql_query("SELECT * FROM signals ORDER BY id DESC LIMIT 50", conn)
+            
+            if df.empty:
+                continue
+
+            wins = 0
+            total_audited = 0
+            
+            # Fetch current prices for all assets in the DB to check status
+            # In a production environment, you'd check historical OHLCV. 
+            # For this suite, we use a simplified 'Last Price' check vs TP/SL.
             for _, row in df.iterrows():
-                # Logic to check price history (omitted for brevity, same as previous version)
-                # ... (Price Replay Logic) ...
-                pass 
+                try:
+                    ticker = ex.fetch_ticker(row['asset'])
+                    current_price = ticker['last']
+                    
+                    # Logic: Did it hit TP or SL?
+                    if row['signal'] == 'LONG':
+                        if current_price >= row['tp']: wins += 1
+                    else: # SHORT
+                        if current_price <= row['tp']: wins += 1
+                    
+                    total_audited += 1
+                except:
+                    continue
 
-            total = wins + losses
-            wr = round((wins / total * 100), 2) if total > 0 else 50.0
+            # Calculate Win Rate using LaTeX logic: 
+            # $$WR = \frac{Wins}{Total} \times 100$$
+            wr = round((wins / total_audited * 100), 2) if total_audited > 0 else 50.0
             
-            # --- RECOVERY LOGIC ---
-            current_status = performance_report.get(strategy_id, {}).get("status", "LIVE")
+            # 2. Determine Status (Kill Switch / Recovery)
+            current_status = performance_report.get(strat_id, {}).get("status", "LIVE")
             
-            if current_status == "LIVE" and wr < KILL_THRESHOLD and total > 5:
+            if current_status == "LIVE" and wr < KILL_THRESHOLD and total_audited > 5:
                 new_status = "RECOVERY"
-            elif current_status == "RECOVERY" and wr > RECOVERY_THRESHOLD and total > 5:
+            elif current_status == "RECOVERY" and wr >= RECOVERY_THRESHOLD:
                 new_status = "LIVE"
             else:
                 new_status = current_status
 
-            performance_report[strategy_id] = {
+            # 3. Update the report
+            performance_report[strat_id] = {
                 "win_rate": wr,
                 "status": new_status,
+                "sample_size": total_audited,
                 "last_audit": datetime.now().isoformat()
             }
+
         finally:
             conn.close()
 
+    # 4. Save the learning file
     with open(PERFORMANCE_FILE, "w") as f:
         json.dump(performance_report, f, indent=4)
-    print(f"✅ Audit Complete. {PERFORMANCE_FILE} updated.")
+    
+    print(f"✅ Audit Sync Complete. {len(performance_report)} engines updated.")
 
 if __name__ == "__main__":
     audit_all()
