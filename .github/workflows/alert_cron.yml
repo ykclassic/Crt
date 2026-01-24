@@ -5,8 +5,6 @@ on:
     - cron: '0 * * * *' # Runs every hour
   workflow_dispatch:   # Allows manual trigger
 
-# --- PERMISSIONS FIX ---
-# This ensures the GITHUB_TOKEN has the right to push code back to your repo
 permissions:
   contents: write
 
@@ -17,7 +15,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Fetches all history so rebase works correctly
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -32,37 +30,37 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          # The Teacher: Updates performance.json
-          python audit_intelligence.py || echo "Audit Step Skipped"
+          # 1. THE ARCHITECT: Retrain the AI Brain on latest 500h data
+          python train_brain.py || echo "Training Skip"
           
-          # The Students: Run alerts (Kill-switch enabled)
+          # 2. THE TEACHER: Audit performance and update Trust Scores
+          python audit_intelligence.py || echo "Audit Skip"
+          
+          # 3. THE STUDENTS: Run strategy engines
           python run_alerts.py || echo "Core Engine Skip"
           python run_alerts1.py || echo "Hybrid Engine Skip"
           python run_alerts2.py || echo "Range Engine Skip"
           python run_alerts3.py || echo "AI Engine Skip"
           
-          # The Judge: Final consensus
+          # 4. THE JUDGE: Final consensus check
           python run_consensus.py || echo "Consensus Engine Skip"
 
       - name: Persist Intelligence Data
         run: |
-          # Identify as the GitHub Actions Bot
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           
-          # GRACEFUL ADD: Only add files that actually exist to avoid 'pathspec' error
-          for file in *.db sent_alerts.json performance.json; do
+          # GRACEFUL ADD: Capturing DBs, Performance JSON, and the AI Brain (.pkl)
+          for file in *.db *.json *.pkl; do
             if [ -f "$file" ]; then
               git add "$file"
             fi
           done
           
-          # REBASE & AUTOSTASH: Pulls latest changes without overwriting local DB updates
           git pull --rebase --autostash origin main
           
-          # COMMIT & PUSH: Only if there are actual changes detected
           if ! git diff --cached --quiet; then
-            git commit -m "Intelligence Sync: $(date +'%Y-%m-%d %H:%M:%S')"
+            git commit -m "Intelligence Sync: $(date +'%Y-%m-%d %H:%M:%S') [Brain Updated]"
             git push origin main
           else
             echo "No intelligence updates to persist this run."
