@@ -1,46 +1,75 @@
-import requests
-import os
+import sqlite3
 import pandas as pd
-from datetime import datetime
+import requests
+import logging
+import argparse
+from datetime import datetime, timedelta
+from config import DB_FILE, WEBHOOK_URL
 
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
-def forward_to_discord(filepath, title="Custom Report"):
-    """Forwards ANY file to Discord instantly."""
-    if not os.path.exists(filepath):
-        print(f"File {filepath} not found.")
-        return
-    
-    with open(filepath, "rb") as f:
-        payload = {"content": f"📤 **Nexus Dispatch**: {title}"}
-        files = {"file": (os.path.basename(filepath), f, "text/csv")}
-        requests.post(WEBHOOK_URL, data=payload, files=files)
-    print(f"Sent {filepath} to Discord.")
+def send_report(msg):
+    if WEBHOOK_URL:
+        try:
+            # Discord has a 2000 character limit per message
+            if len(msg) > 1900:
+                parts = [msg[i:i+1900] for i in range(0, len(msg), 1900)]
+                for p in parts:
+                    requests.post(WEBHOOK_URL, json={"content": p})
+            else:
+                requests.post(WEBHOOK_URL, json={"content": msg})
+        except Exception as e:
+            logging.error(f"Reporting failed: {e}")
 
-def generate_full_report(type_label="System Snapshot"):
-    """Gathers all signals into one master CSV and sends it."""
-    dbs = ["nexus_core.db", "hybrid_v1.db", "rangemaster.db", "nexus_ai.db"]
-    frames = []
-    for db in dbs:
-        if os.path.exists(db):
-            import sqlite3
-            conn = sqlite3.connect(db)
-            df = pd.read_sql_query("SELECT * FROM signals", conn)
-            df['engine'] = db.replace(".db", "")
-            frames.append(df)
-            conn.close()
-    
-    if frames:
-        master = pd.concat(frames)
-        fname = f"Nexus_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
-        master.to_csv(fname, index=False)
-        forward_to_discord(fname, type_label)
-        os.remove(fname)
+def generate_report(full=False):
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        if full:
+            query = "SELECT * FROM signals ORDER BY ts DESC"
+            title = "📊 NEXUS FULL SYSTEM REPORT"
+        else:
+            # Only report the last 24 hours by default
+            yesterday = (datetime.now() - timedelta(days=1)).isoformat()
+            query = "SELECT * FROM signals WHERE ts > ? ORDER BY ts DESC"
+            title = "📅 NEXUS DAILY PERFORMANCE REPORT"
+            
+        df = pd.read_sql_query(query, conn, params=(None if full else (yesterday,)))
+        
+        if df.empty:
+            send_report(f"{title}\nNo signals found for the selected period.")
+            return
+
+        # Basic Stats
+        total = len(df)
+        longs = len(df[df['signal'] == 'LONG'])
+        shorts = len(df[df['signal'] == 'SHORT'])
+        top_asset = df['asset'].mode()[0] if not df['asset'].empty else "N/A"
+
+        report_body = (
+            f"**{title}**\n"
+            f"Total Signals: `{total}` (🟢 {longs} | 🔴 {shorts})\n"
+            f"Most Active Asset: `{top_asset}`\n"
+            f"Latest Timestamp: `{df['ts'].max()}`\n"
+            f"----------------------------\n"
+        )
+
+        # Add last 5 signals for preview
+        report_body += "**Recent Activity Preview:**\n"
+        for _, row in df.head(5).iterrows():
+            emoji = "🟢" if row['signal'] == "LONG" else "🔴"
+            report_body += f"{emoji} {row['asset']} | Entry: {row['entry']:.4f} | {row['ts'][:16]}\n"
+
+        send_report(report_body)
+        logging.info("Report sent successfully.")
+
+    except Exception as e:
+        logging.error(f"Error generating report: {e}")
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
-    import sys
-    # Usage: python nexus_reporter.py --full or --forward path/to/file.csv
-    if "--full" in sys.argv:
-        generate_full_report("Automated System Audit")
-    elif "--forward" in sys.argv and len(sys.argv) > 2:
-        forward_to_discord(sys.argv[2], "Manual Dashboard Export")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--full", action="store_true", help="Generate a full history report")
+    args = parser.parse_args()
+    
+    generate_report(full=args.full)
