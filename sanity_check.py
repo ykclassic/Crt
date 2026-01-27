@@ -1,55 +1,77 @@
-import os
 import sqlite3
-import json
-import requests
-import pickle
+import pandas as pd
+import ccxt
+import os
+import sys
+import logging
+from datetime import datetime
+from config import DB_FILE, ASSETS, TIMEFRAMES
 
-# --- CONFIG ---
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-FILES_TO_CHECK = {
-    "DB: Core": "nexus_core.db",
-    "DB: Hybrid": "hybrid_v1.db",
-    "DB: Range": "rangemaster.db",
-    "DB: AI": "nexus_ai.db",
-    "DB: Journal": "nexus_journal.db",
-    "Intelligence": "performance.json",
-    "AI Brain": "nexus_brain.pkl"
-}
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
-def check_system():
-    print("🔍 Nexus Sanity Check Starting...")
-    results = []
-    
-    # 1. File Existence & DB Integrity
-    for label, path in FILES_TO_CHECK.items():
-        if os.path.exists(path):
-            status = "✅ FOUND"
-            if path.endswith(".db"):
-                try:
-                    conn = sqlite3.connect(path)
-                    conn.execute("SELECT name FROM sqlite_master LIMIT 1")
-                    conn.close()
-                    status += " (INTEGRITY OK)"
-                except:
-                    status = "❌ CORRUPT"
+def run_sanity_check():
+    logging.info("--- STARTING NEXUS SANITY CHECK ---")
+    errors = 0
+
+    # 1. Check Configuration
+    logging.info(f"Checking assets: {ASSETS}")
+    if not ASSETS:
+        logging.error("No ASSETS defined in config.py")
+        errors += 1
+
+    # 2. Check Database & Schema
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Ensure table exists
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                engine TEXT,
+                asset TEXT, timeframe TEXT, signal TEXT, 
+                entry REAL, sl REAL, tp REAL, confidence REAL, 
+                reason TEXT, ts TEXT
+            )
+        """)
+        
+        # Check for 'engine' column (Migration check)
+        cursor.execute("PRAGMA table_info(signals)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'engine' not in columns:
+            logging.warning("Migration: Adding 'engine' column to signals table.")
+            cursor.execute("ALTER TABLE signals ADD COLUMN engine TEXT DEFAULT 'core'")
+        
+        # Check latest record
+        cursor.execute("SELECT ts FROM signals ORDER BY ts DESC LIMIT 1")
+        last_ts = cursor.fetchone()
+        if last_ts:
+            logging.info(f"Latest signal in database: {last_ts[0]}")
         else:
-            status = "⚠️ MISSING"
-        results.append(f"{label}: {status}")
+            logging.info("Database is currently empty (New install).")
+            
+        conn.commit()
+        conn.close()
+        logging.info("Database check: PASSED")
+    except Exception as e:
+        logging.error(f"Database check: FAILED - {e}")
+        errors += 1
 
-    # 2. Discord Connectivity
-    discord_status = "❌ NOT CONFIGURED"
-    if WEBHOOK_URL:
-        try:
-            resp = requests.post(WEBHOOK_URL, json={"content": "🛠️ **Nexus Sanity Check**: Connection Verified."})
-            discord_status = "✅ VERIFIED" if resp.status_code in [200, 204] else f"❌ ERROR {resp.status_code}"
-        except:
-            discord_status = "❌ CONNECTION FAILED"
-    
-    # Summary
-    print("\n--- SYSTEM REPORT ---")
-    for r in results: print(r)
-    print(f"Discord Webhook: {discord_status}")
-    print("----------------------\n")
+    # 3. Check Exchange Connectivity
+    try:
+        ex = ccxt.binance()
+        status = ex.fetch_status()
+        logging.info(f"Exchange connectivity (Binance): {status['status']}")
+    except Exception as e:
+        logging.error(f"Exchange connectivity: FAILED - {e}")
+        errors += 1
+
+    # 4. Final Verdict
+    if errors > 0:
+        logging.error(f"Sanity Check failed with {errors} error(s).")
+        sys.exit(1)
+    else:
+        logging.info("--- SANITY CHECK COMPLETE: SYSTEM HEALTHY ---")
 
 if __name__ == "__main__":
-    check_system()
+    run_sanity_check()
