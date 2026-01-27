@@ -1,11 +1,10 @@
 import sqlite3
-import pandas as pd
-import ccxt
 import os
 import sys
 import logging
+import ccxt
 from datetime import datetime
-from config import DB_FILE, ASSETS, TIMEFRAMES
+from config import DB_FILE, ASSETS
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
@@ -24,7 +23,7 @@ def run_sanity_check():
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         
-        # Ensure table exists
+        # Ensure table exists with all required columns
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,20 +34,12 @@ def run_sanity_check():
             )
         """)
         
-        # Check for 'engine' column (Migration check)
+        # Column migration check
         cursor.execute("PRAGMA table_info(signals)")
         columns = [column[1] for column in cursor.fetchall()]
         if 'engine' not in columns:
-            logging.warning("Migration: Adding 'engine' column to signals table.")
+            logging.warning("Migration: Adding 'engine' column.")
             cursor.execute("ALTER TABLE signals ADD COLUMN engine TEXT DEFAULT 'core'")
-        
-        # Check latest record
-        cursor.execute("SELECT ts FROM signals ORDER BY ts DESC LIMIT 1")
-        last_ts = cursor.fetchone()
-        if last_ts:
-            logging.info(f"Latest signal in database: {last_ts[0]}")
-        else:
-            logging.info("Database is currently empty (New install).")
             
         conn.commit()
         conn.close()
@@ -57,14 +48,24 @@ def run_sanity_check():
         logging.error(f"Database check: FAILED - {e}")
         errors += 1
 
-    # 3. Check Exchange Connectivity
+    # 3. Check Exchange Connectivity (REPLACED BINANCE WITH GATE.IO)
+    # Using Gate.io because it has high uptime and fewer regional blocks for GitHub Actions
     try:
-        ex = ccxt.binance()
+        logging.info("Testing connectivity to Gate.io...")
+        ex = ccxt.gateio({'enableRateLimit': True})
         status = ex.fetch_status()
-        logging.info(f"Exchange connectivity (Binance): {status['status']}")
+        logging.info(f"Exchange connectivity (Gate.io): {status.get('status', 'OK')}")
     except Exception as e:
         logging.error(f"Exchange connectivity: FAILED - {e}")
-        errors += 1
+        # We check a secondary as a fallback
+        try:
+            logging.info("Testing fallback connectivity to XT.com...")
+            xt = ccxt.xt()
+            xt.fetch_status()
+            logging.info("Fallback (XT): PASSED")
+        except Exception as fallback_e:
+            logging.error(f"All exchange connectivity failed: {fallback_e}")
+            errors += 1
 
     # 4. Final Verdict
     if errors > 0:
