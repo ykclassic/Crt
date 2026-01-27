@@ -8,42 +8,47 @@ on:
     - cron: '0 20 1 * *'      # Monthly Report: 1st of the month 8PM UTC
   workflow_dispatch:         # Manual trigger for instant run/report
 
+permissions:
+  contents: write            # Required for the bot to push database updates
+
 jobs:
   nexus-ops:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # Fetch full history for clean rebasing during sync
 
       - name: Python Setup
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'  # Updated to latest stable
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
           pip install pandas ccxt requests plotly streamlit \
                       numpy xgboost scikit-learn
 
+      - name: Pre-Flight Sanity Check
+        run: python sanity_check.py
+
       - name: Hourly Intelligence Cycle
-        if: github.event_name == 'schedule' && github.event.schedule == '0 * * * *'
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 * * * *')
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          # Run all strategy engines (generate fresh signals)
-          python run_alerts.py          # Core
-          python hybrid_engine.py       # Hybrid V1
-          python range_engine.py        # Rangemaster
-          python ai_engine.py           # AI Predict
+          # Run all strategy engines (Optimized for Bitget, Gate.io, XT)
+          python run_alerts.py          
+          # python hybrid_engine.py      # Enable as needed
+          # python range_engine.py       
+          # python ai_engine.py          
 
-          # Detect and alert on consensus
-          python run_consensus.py
-
-          # Dispatch any individual signals (optional - remove if you only want consensus alerts)
+          # Dispatch alerts to Discord
           python nexus_dispatcher.py
 
-          # Audit performance (recommended hourly for adaptive kill-switch)
-          python audit_intelligence.py
+          # Audit performance
+          # python audit_intelligence.py
 
       - name: Daily AI Retraining
         if: github.event_name == 'schedule' && github.event.schedule == '0 0 * * *'
@@ -58,11 +63,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          # Generate full system report and forward to Discord
           python nexus_reporter.py --full
-
-          # Optional: Run sanity check before reporting
-          python sanity_check.py
 
       - name: Daily Maintenance
         if: github.event_name == 'schedule' && github.event.schedule == '0 0 * * *'
@@ -70,10 +71,21 @@ jobs:
           python maintenance.py
 
       - name: Sync Data to Repo
+        if: always()          # Run even if previous steps had warnings to save data
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           
+          # Add all database and intelligence files
           git add nexus.db nexus_journal.db performance.json nexus_brain.pkl
-          git commit -m "Auto-sync: Intelligence data update $(date +'%Y-%m-%d %H:%M UTC')" || echo "No changes to commit"
-          git push
+          
+          # Only commit if there are changes to avoid erroring out
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Auto-sync: Intelligence data update $(date +'%Y-%m-%d %H:%M UTC')"
+            
+            # Rebase to prevent push failures if the repo changed during the run
+            git pull --rebase origin main
+            git push origin main
+          fi
