@@ -2,11 +2,9 @@ name: Nexus AI Full Suite Orchestration
 
 on:
   schedule:
-    # Run every hour to check market health and generate signals
-    - cron: '0 * * * *'
-    # Run a full maintenance and brain retraining cycle at 00:00 UTC
-    - cron: '0 0 * * *'
-  workflow_dispatch: # Allows manual trigger for testing
+    - cron: '0 * * * *'   # Hourly Signal Generation
+    - cron: '30 23 * * *' # Daily Maintenance & Retraining at 11:30 PM
+  workflow_dispatch:      # Manual Trigger
 
 jobs:
   nexus_operations:
@@ -19,60 +17,49 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
 
       - name: Install System Dependencies
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
 
-      # --- STEP 1: MAINTENANCE (PHASE 4) ---
-      # Run cleanup first to ensure no "Ghost Signals" contaminate the session
-      - name: Run Phase 4 Custodian (Daily)
-        if: github.event.schedule == '0 0 * * *' || github.event_name == 'workflow_dispatch'
+      # --- PHASE 4: MAINTENANCE ---
+      - name: Run Maintenance (Custodian)
+        if: github.event.schedule == '30 23 * * *' || github.event_name == 'workflow_dispatch'
         run: python maintenance.py
 
-      # --- STEP 2: MARKET HEALTH (PHASE 2) ---
-      # The Guardian checks for BTC crashes before engines are allowed to run
-      - name: Run Phase 2 Market Guardian
+      # --- PHASE 2: MARKET GUARDIAN ---
+      - name: Run Market Guardian
         run: python market_guardian.py
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
-      # --- STEP 3: SIGNAL GENERATION (PHASES 1 & 3) ---
-      # Engines generate signals using Ensemble logic and Dynamic Risk sizing
-      - name: Run Nexus AI & Engines
+      # --- PHASE 1 & 3: ENGINE EXECUTION ---
+      - name: Run AI & Hybrid Engines
         run: |
           python ai_engine.py
           python hybrid_engine.py
-          python range_engine.py
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
-      # --- STEP 4: CONSENSUS FILTERING ---
-      # Filter entries against 4h macro trends for "Diamond" status
-      - name: Run Consensus Filter
-        run: python run_consensus.py
-        env:
-          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
-
-      # --- STEP 5: PERFORMANCE AUDIT ---
-      # Update win rates and manage the Kill-Switch status
-      - name: Run Performance Audit
+      # --- PERFORMANCE AUDIT ---
+      - name: Run Auditor
         run: python audit_intelligence.py
 
-      # --- STEP 6: AI RETRAINING (PHASE 3) ---
-      # Retrain the Ensemble committee on updated audited data
-      - name: Run Phase 3 Ensemble Retraining (Daily)
-        if: github.event.schedule == '0 0 * * *' || github.event_name == 'workflow_dispatch'
+      # --- PHASE 3: TRAINING (With NaN Protection) ---
+      - name: Run AI Retraining (Daily)
+        if: github.event.schedule == '30 23 * * *' || github.event_name == 'workflow_dispatch'
         run: python train_brain.py
 
-      # --- STEP 7: STATE PERSISTENCE ---
-      # Save all database updates, performance files, and brain backups back to the repo
+      # --- PHASE 5: SYSTEM HEALTH DIAGNOSTIC ---
+      - name: Run Health Check (Sync to Visualizer)
+        run: python health_check.py
+
+      # --- PERSISTENCE ---
       - name: Commit & Push Changes
         run: |
           git config --local user.email "cto-bot@nexus-ai.com"
           git config --local user.name "Nexus CTO Bot"
-          git add nexus.db nexus_history.db nexus_brain.pkl performance.json backups/
-          git commit -m "Nexus Auto-Update: Signals, Audit, and Brain [skip ci]" || echo "No changes to commit"
+          git add .
+          git commit -m "Nexus Daily Cycle: Signal Update & Health Check [skip ci]" || echo "No changes to commit"
           git push
