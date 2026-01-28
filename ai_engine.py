@@ -30,7 +30,13 @@ def is_engine_enabled():
     try:
         with open(PERFORMANCE_FILE, "r") as f:
             perf = json.load(f)
-            return perf.get(STRATEGY_ID, {}).get("status", "LIVE") == "LIVE"
+            engine_data = perf.get(STRATEGY_ID, {})
+            if engine_data.get("status") == "RECOVERY":
+                # Check if it was a Guardian stop
+                reason = engine_data.get("reason", "Low Win Rate")
+                logging.warning(f"Engine Disabled. Reason: {reason}")
+                return False
+            return True
     except: return True
 
 def get_ai_prediction(rsi, vol_change, dist_ema):
@@ -46,11 +52,6 @@ def get_ai_prediction(rsi, vol_change, dist_ema):
         return None
 
 def calculate_dynamic_risk(df, current_price, signal, confidence):
-    """
-    Phase 1: Volatility-Adjusted Sizing
-    Uses ATR to set Stop Loss and determines Position Size based on account risk.
-    """
-    # Calculate ATR (Average True Range)
     high_low = df['h'] - df['l']
     high_close = np.abs(df['h'] - df['c'].shift())
     low_close = np.abs(df['l'] - df['c'].shift())
@@ -58,22 +59,14 @@ def calculate_dynamic_risk(df, current_price, signal, confidence):
     true_range = np.max(ranges, axis=1)
     atr = true_range.rolling(14).mean().iloc[-1]
 
-    # 1. Set SL based on Volatility
     sl_distance = atr * ATR_MULTIPLIER
     sl_price = current_price - sl_distance if signal == "LONG" else current_price + sl_distance
-    
-    # 2. Set TP based on Risk:Reward (e.g., 2:1)
     tp_price = current_price + (sl_distance * 2) if signal == "LONG" else current_price - (sl_distance * 2)
 
-    # 3. Calculate Position Size ($ Amount)
-    # Risk Amount = Capital * Risk% (e.g., $1000 * 0.02 = $20)
     risk_amount = TOTAL_CAPITAL * RISK_PER_TRADE
-    
-    # Boost risk if AI is extremely confident
     if confidence >= MIN_CONFIDENCE_FOR_SIZE_BOOST:
         risk_amount *= 1.5 
         
-    # Position Size = Risk Amount / SL Distance in %
     sl_pct = sl_distance / current_price
     suggested_size = risk_amount / sl_pct
 
@@ -81,7 +74,6 @@ def calculate_dynamic_risk(df, current_price, signal, confidence):
 
 def run_ai_engine():
     if not is_engine_enabled():
-        logging.warning(f"{APP_NAME} is in RECOVERY. skipping.")
         return
 
     ex = ccxt.xt({"enableRateLimit": True})
@@ -93,7 +85,6 @@ def run_ai_engine():
             data = ex.fetch_ohlcv(asset, '1h', limit=100)
             df = pd.DataFrame(data, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
             
-            # Technical Indicators
             delta = df['c'].diff()
             up, down = delta.clip(lower=0), -delta.clip(upper=0)
             rsi = 100 - (100 / (1 + up.rolling(14).mean() / down.rolling(14).mean()))
@@ -103,7 +94,6 @@ def run_ai_engine():
             confidence = get_ai_prediction(rsi.iloc[-1], df['v'].pct_change().iloc[-1], (price - ema.iloc[-1])/price) or 52.0
             signal = "LONG" if confidence > 50 else "SHORT"
 
-            # PHASE 1: Dynamic Risk Calculation
             sl, tp, size = calculate_dynamic_risk(df, price, signal, confidence)
 
             cursor.execute("""
@@ -113,7 +103,7 @@ def run_ai_engine():
             conn.commit()
 
             alert_msg = (
-                f"🤖 **{APP_NAME} (Risk-Adjusted)**\n"
+                f"🤖 **{APP_NAME}**\n"
                 f"━━━━━━━━━━━━━━━\n"
                 f"📈 **Asset**: `{asset}` | **Signal**: `{signal}`\n"
                 f"📍 **Entry**: `{price:.4f}`\n"
