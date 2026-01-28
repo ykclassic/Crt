@@ -1,82 +1,64 @@
 import sqlite3
 import pandas as pd
 import numpy as np
-import ccxt
 import pickle
 import logging
 import os
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier, VotingClassifier
 from sklearn.preprocessing import StandardScaler
-from xgboost import XGBClassifier # Ensure 'pip install xgboost' is run
-from datetime import datetime
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from xgboost import XGBClassifier
 from config import DB_FILE, MODEL_FILE, VOTING_METHOD
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(message)s')
 
 def train_ensemble_model():
-    logging.info("--- PHASE 3: ENSEMBLE TRAINING INITIALIZED ---")
+    logging.info("--- PHASE 3: ROBUST ENSEMBLE TRAINING ---")
     
     if not os.path.exists(DB_FILE):
-        logging.error("No database found. AI cannot learn.")
+        logging.error("Database not found.")
         return
 
     conn = sqlite3.connect(DB_FILE)
-    df_signals = pd.read_sql_query("SELECT asset, timeframe, signal, entry, sl, tp, ts FROM signals", conn)
+    # We only train on audited signals (Phase 5 requirement)
+    df = pd.read_sql_query("SELECT rsi, vol_change, dist_ema, result FROM signals WHERE result IS NOT NULL", conn)
     conn.close()
 
-    if len(df_signals) < 10:
-        logging.warning(f"Insufficient data ({len(df_signals)}). Need 10+ for Ensemble.")
+    if len(df) < 5:
+        logging.warning("Insufficient audited data to train. Need at least 5 concluded trades.")
         return
 
-    ex = ccxt.gateio()
-    training_data, labels = [], []
+    # Prepare features and labels
+    X = df[['rsi', 'vol_change', 'dist_ema']]
+    y = df['result']
 
-    for _, row in df_signals.iterrows():
-        try:
-            ts_ms = int(datetime.fromisoformat(row['ts']).timestamp() * 1000)
-            # Context Features
-            ohlcv = ex.fetch_ohlcv(row['asset'], row['timeframe'], since=ts_ms - (20 * 60 * 60 * 1000), limit=30)
-            df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-            
-            rsi = (100 - (100 / (1 + df['c'].diff().clip(lower=0).rolling(14).mean() / -df['c'].diff().clip(upper=0).rolling(14).mean()))).iloc[-1]
-            dist_ema = (df['c'].iloc[-1] - df['c'].ewm(span=20).mean().iloc[-1]) / df['c'].iloc[-1]
-            vol_change = df['v'].pct_change().iloc[-1]
+    # 1. Define Base Estimators
+    clf1 = GradientBoostingClassifier(n_estimators=100)
+    clf2 = RandomForestClassifier(n_estimators=100)
+    clf3 = XGBClassifier(n_estimators=100, use_label_encoder=False, eval_metric='logloss')
 
-            # Outcome Label
-            outcome_ohlcv = ex.fetch_ohlcv(row['asset'], row['timeframe'], since=ts_ms, limit=50)
-            won = 0
-            for candle in outcome_ohlcv:
-                if row['signal'] == "LONG":
-                    if candle[2] >= row['tp']: won = 1; break
-                    if candle[3] <= row['sl']: won = 0; break
-                else:
-                    if candle[3] <= row['tp']: won = 1; break
-                    if candle[2] >= row['sl']: won = 0; break
-            
-            training_data.append([rsi, vol_change, dist_ema])
-            labels.append(won)
-        except: continue
-
-    X, y = np.array(training_data), np.array(labels)
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    # CREATE THE ENSEMBLE
-    clf1 = GradientBoostingClassifier(n_estimators=100, learning_rate=0.1)
-    clf2 = RandomForestClassifier(n_estimators=100, max_depth=5)
-    clf3 = XGBClassifier(n_estimators=100, learning_rate=0.1, use_label_encoder=False, eval_metric='logloss')
-
+    # 2. Define the Voting Ensemble
     ensemble = VotingClassifier(
         estimators=[('gb', clf1), ('rf', clf2), ('xgb', clf3)],
         voting=VOTING_METHOD
     )
-    
-    ensemble.fit(X_scaled, y)
+
+    # 3. Create a Pipeline that handles Missing Values (NaNs)
+    # This fixes the "Instance by using an imputer" error
+    brain_pipeline = Pipeline([
+        ('imputer', SimpleImputer(strategy='median')), # Fill NaNs with the middle value
+        ('scaler', StandardScaler()),                   # Normalize data
+        ('model', ensemble)                            # The Committee
+    ])
+
+    # 4. Fit the robust model
+    brain_pipeline.fit(X, y)
     
     with open(MODEL_FILE, "wb") as f:
-        pickle.dump((ensemble, scaler), f)
+        pickle.dump(brain_pipeline, f)
     
-    logging.info(f"PHASE 3 SUCCESS: Ensemble trained with 3 models on {len(X)} samples.")
+    logging.info(f"SUCCESS: Ensemble trained on {len(df)} samples with NaN protection.")
 
 if __name__ == "__main__":
     train_ensemble_model()
