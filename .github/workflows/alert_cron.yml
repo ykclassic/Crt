@@ -9,16 +9,16 @@ on:
   workflow_dispatch:         # Manual trigger for instant run/report
 
 permissions:
-  contents: write            # Required for the bot to push database updates
+  contents: write            # Required for pushing database updates back to the repo
 
 jobs:
   nexus-ops:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0      # Fetch full history for clean rebasing during sync
+          fetch-depth: 0      # Necessary for clean rebase logic
 
       - name: Python Setup
         uses: actions/setup-python@v5
@@ -38,22 +38,19 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          # Run all strategy engines (Optimized for Bitget, Gate.io, XT)
+          # Core Engines
           python run_alerts.py          
-          # python hybrid_engine.py      # Enable as needed
-          # python range_engine.py       
-          # python ai_engine.py          
+          python ai_engine.py
 
-          # Dispatch alerts to Discord
+          # Logic Layer
+          python run_consensus.py
           python nexus_dispatcher.py
-
-          # Audit performance
-          # python audit_intelligence.py
+          python audit_intelligence.py
 
       - name: Daily AI Retraining
         if: github.event_name == 'schedule' && github.event.schedule == '0 0 * * *'
         run: |
-          python train_brain.py
+          if [ -f "train_brain.py" ]; then python train_brain.py; fi
 
       - name: Generate & Send Reports
         if: >
@@ -71,21 +68,19 @@ jobs:
           python maintenance.py
 
       - name: Sync Data to Repo
-        if: always()          # Run even if previous steps had warnings to save data
+        if: always()          # Run even if a strategy engine has a minor failure
         run: |
           git config --local user.name "github-actions[bot]"
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Add all database and intelligence files
-          git add nexus.db nexus_journal.db performance.json nexus_brain.pkl
+          # Use wildcards and silence errors to avoid 'pathspec' exit code 128
+          # This stages only what actually exists
+          git add *.db *.json *.pkl 2>/dev/null || echo "No data files found to stage."
           
-          # Only commit if there are changes to avoid erroring out
           if git diff --cached --quiet; then
-            echo "No changes to commit"
+            echo "No data changes detected. Skipping sync."
           else
-            git commit -m "Auto-sync: Intelligence data update $(date +'%Y-%m-%d %H:%M UTC')"
-            
-            # Rebase to prevent push failures if the repo changed during the run
+            git commit -m "Auto-sync: Intelligence update $(date +'%Y-%m-%d %H:%M UTC')"
             git pull --rebase origin main
             git push origin main
           fi
