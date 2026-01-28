@@ -2,51 +2,74 @@ import ccxt
 import pandas as pd
 import sqlite3
 import logging
+import json
+import os
+import requests
 from datetime import datetime
-from config import DB_FILE, WEBHOOK_URL, ASSETS
+from config import DB_FILE, WEBHOOK_URL, ENGINES, ASSETS, PERFORMANCE_FILE
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
 STRATEGY_ID = "rangemaster"
+APP_NAME = ENGINES.get(STRATEGY_ID, "Nexus Rangemaster")
+
+def is_engine_enabled():
+    if not os.path.exists(PERFORMANCE_FILE): return True
+    try:
+        with open(PERFORMANCE_FILE, "r") as f:
+            perf = json.load(f)
+            return perf.get(STRATEGY_ID, {}).get("status", "LIVE") == "LIVE"
+    except: return True
+
+def notify(msg):
+    if WEBHOOK_URL:
+        try:
+            requests.post(WEBHOOK_URL, json={"content": f"**[{APP_NAME}]**\n{msg}"})
+        except Exception as e:
+            logging.error(f"Discord notify failed: {e}")
 
 def run_range_engine():
-    # Using Bitget for Range/Scalp data
+    if not is_engine_enabled():
+        logging.warning(f"{APP_NAME} is in RECOVERY mode. Skipping.")
+        return
+
+    # Bitget is excellent for 15m scalping/range data
     ex = ccxt.bitget({"enableRateLimit": True})
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
     for asset in ASSETS:
         try:
-            data = ex.fetch_ohlcv(asset, '15m', limit=50) # Lower timeframe for range play
-            df = pd.DataFrame(data, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
+            data = ex.fetch_ohlcv(asset, '15m', limit=50)
+            df = pd.DataFrame(data, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
             
-            # Bollinger Bands
-            df['sma'] = df['close'].rolling(20).mean()
-            df['std'] = df['close'].rolling(20).std()
+            # Bollinger Bands Calculation
+            df['sma'] = df['c'].rolling(20).mean()
+            df['std'] = df['c'].rolling(20).std()
             df['upper'] = df['sma'] + (2 * df['std'])
             df['lower'] = df['sma'] - (2 * df['std'])
             
             last = df.iloc[-1]
             signal = "NEUTRAL"
             
-            if last['close'] <= last['lower']:
+            if last['c'] <= last['lower']:
                 signal = "LONG"
-                reason = "Range Bottom (Bollinger)"
-            elif last['close'] >= last['upper']:
+                reason = "Bollinger Lower Band Touch"
+            elif last['c'] >= last['upper']:
                 signal = "SHORT"
-                reason = "Range Top (Bollinger)"
+                reason = "Bollinger Upper Band Touch"
 
             if signal != "NEUTRAL":
-                entry = last['close']
-                sl = last['lower'] * 0.99 if signal == "LONG" else last['upper'] * 1.01
-                tp = last['sma'] # Target the mean (middle band)
+                price = last['c']
+                sl = last['lower'] * 0.995 if signal == "LONG" else last['upper'] * 1.005
+                tp = last['sma'] # Mean Reversion Target
 
                 cursor.execute("""
                     INSERT INTO signals (engine, asset, timeframe, signal, entry, sl, tp, confidence, reason, ts)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (STRATEGY_ID, asset, '15m', signal, entry, sl, tp, 60.0, reason, datetime.now().isoformat()))
+                """, (STRATEGY_ID, asset, '15m', signal, price, sl, tp, 60.0, reason, datetime.now().isoformat()))
                 conn.commit()
-                logging.info(f"Range Signal: {signal} {asset}")
+                notify(f"↔️ **Range Signal**: {signal} {asset} at `{price}`")
 
         except Exception as e:
             logging.error(f"Range Engine Error ({asset}): {e}")
