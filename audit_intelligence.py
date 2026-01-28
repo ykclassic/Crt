@@ -1,134 +1,97 @@
 import sqlite3
 import pandas as pd
 import ccxt
+import logging
 import json
 import os
-import logging
-from datetime import datetime
-from config import DB_FILE, PERFORMANCE_FILE, ENGINES
+from datetime import datetime, timedelta
+from config import DB_FILE, PERFORMANCE_FILE, KILL_THRESHOLD, RECOVERY_THRESHOLD
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
-# Performance Thresholds
-KILL_THRESHOLD = 40.0
-RECOVERY_THRESHOLD = 50.0
-MAX_SIGNALS_PER_ENGINE = 50
-MAX_CANDLES_LOOKFORWARD = 500
-
-def determine_outcome(row, ex):
+def get_market_outcome(ex, asset, timeframe, start_ts, tp, sl, signal_type):
+    """Checks OHLCV data to see if TP or SL was hit first."""
     try:
-        # Standardize timestamp format
-        ts_str = row['ts'].replace('Z', '+00:00') if 'Z' in row['ts'] else row['ts']
-        signal_ts = datetime.fromisoformat(ts_str)
-        since_ms = int(signal_ts.timestamp() * 1000) + 1
-
-        ohlcv = ex.fetch_ohlcv(
-            row['asset'],
-            timeframe=row['timeframe'],
-            since=since_ms,
-            limit=MAX_CANDLES_LOOKFORWARD
-        )
-        if not ohlcv:
-            return "ongoing"
-
-        df_candles = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
-
-        entry = float(row['entry'])
-        sl = float(row['sl'])
-        tp = float(row['tp'])
-        direction = row['signal'].upper()
-
-        for _, candle in df_candles.iterrows():
-            if direction == "LONG":
-                if candle['low'] <= sl: return "loss"
-                if candle['high'] >= tp: return "win"
-            else:
-                if candle['high'] >= sl: return "loss"
-                if candle['low'] <= tp: return "win"
-
-        return "ongoing"
+        # Fetch 100 candles following the signal to check outcome
+        since = int(datetime.fromisoformat(start_ts).timestamp() * 1000)
+        ohlcv = ex.fetch_ohlcv(asset, timeframe, since=since, limit=100)
+        
+        for candle in ohlcv:
+            high, low = candle[2], candle[3]
+            
+            if signal_type == "LONG":
+                if high >= tp: return "WIN"
+                if low <= sl: return "LOSS"
+            elif signal_type == "SHORT":
+                if low <= tp: return "WIN"
+                if high >= sl: return "LOSS"
+        return "PENDING"
     except Exception as e:
-        logging.warning(f"Outcome check failed for {row['asset']} {row['ts']}: {e}")
-        return "skipped"
+        logging.error(f"Error fetching outcome for {asset}: {e}")
+        return "ERROR"
 
-def audit_all():
-    # Using Gate.io for auditing data (high precision)
-    ex = ccxt.gateio({"enableRateLimit": True})
-    performance_report = {}
-
-    if os.path.exists(PERFORMANCE_FILE):
-        try:
-            with open(PERFORMANCE_FILE, "r") as f:
-                performance_report = json.load(f)
-        except Exception as e:
-            logging.error(f"Failed to load performance file: {e}")
-
+def run_audit():
+    logging.info("--- STARTING PERFORMANCE AUDIT ---")
     conn = sqlite3.connect(DB_FILE)
-    try:
-        # Audit every engine defined in config.py
-        for strat_id in ENGINES.keys():
-            try:
-                df = pd.read_sql_query("""
-                    SELECT * FROM signals 
-                    WHERE engine = ? 
-                    ORDER BY ts DESC LIMIT ?
-                """, conn, params=(strat_id, MAX_SIGNALS_PER_ENGINE))
+    
+    # Load all signals from the last 7 days
+    query = "SELECT * FROM signals WHERE ts > datetime('now', '-7 days')"
+    df = pd.read_sql_query(query, conn)
+    
+    if df.empty:
+        logging.info("No signals found to audit.")
+        return
 
-                if df.empty:
-                    continue
+    # Use Gate.io as the reference for auditing (high fidelity)
+    ex = ccxt.gateio()
+    performance = {}
 
-                # Ensure numeric types
-                df['entry'] = pd.to_numeric(df['entry'], errors='coerce')
-                df['sl'] = pd.to_numeric(df['sl'], errors='coerce')
-                df['tp'] = pd.to_numeric(df['tp'], errors='coerce')
-                df = df.dropna(subset=['entry', 'sl', 'tp', 'signal'])
+    # Group by engine to calculate individual "Alpha"
+    for engine in df['engine'].unique():
+        engine_df = df[df['engine'] == engine]
+        results = []
 
-                wins = losses = ongoing = skipped = 0
+        for _, row in engine_df.iterrows():
+            outcome = get_market_outcome(
+                ex, row['asset'], row['timeframe'], 
+                row['ts'], row['tp'], row['sl'], row['signal']
+            )
+            results.append(outcome)
 
-                for _, row in df.iterrows():
-                    outcome = determine_outcome(row, ex)
-                    if outcome == "win": wins += 1
-                    elif outcome == "loss": losses += 1
-                    elif outcome == "ongoing": ongoing += 1
-                    else: skipped += 1
+        # Calculate Metrics
+        total = len([r for r in results if r in ["WIN", "LOSS"]])
+        wins = results.count("WIN")
+        win_rate = (wins / total * 100) if total > 0 else 0.0
 
-                closed_trades = wins + losses
-                wr = round((wins / closed_trades * 100), 2) if closed_trades > 0 else 50.0
+        # Load existing status to check for recovery
+        current_status = "LIVE"
+        if os.path.exists(PERFORMANCE_FILE):
+            with open(PERFORMANCE_FILE, "r") as f:
+                old_perf = json.load(f)
+                current_status = old_perf.get(engine, {}).get("status", "LIVE")
 
-                # Kill Switch Logic
-                current_status = performance_report.get(strat_id, {}).get("status", "LIVE")
-                if current_status == "LIVE" and wr < KILL_THRESHOLD and closed_trades >= 5:
-                    new_status = "RECOVERY"
-                    logging.warning(f"!!! KILL SWITCH TRIGGERED FOR {strat_id} !!!")
-                elif current_status == "RECOVERY" and wr >= RECOVERY_THRESHOLD and closed_trades >= 5:
-                    new_status = "LIVE"
-                    logging.info(f"Engine {strat_id} recovered and is now back LIVE.")
-                else:
-                    new_status = current_status
+        # Kill-Switch / Recovery Logic
+        new_status = current_status
+        if win_rate < KILL_THRESHOLD and total >= 5:
+            new_status = "RECOVERY"
+            logging.warning(f"🚨 ENGINE {engine} KILLED: Win rate {win_rate}% is too low.")
+        elif current_status == "RECOVERY" and win_rate >= RECOVERY_THRESHOLD:
+            new_status = "LIVE"
+            logging.info(f"✅ ENGINE {engine} RECOVERED: Win rate back to {win_rate}%.")
 
-                performance_report[strat_id] = {
-                    "win_rate": wr,
-                    "status": new_status,
-                    "closed_sample": closed_trades,
-                    "wins": wins,
-                    "losses": losses,
-                    "ongoing": ongoing,
-                    "last_audit": datetime.now().isoformat()
-                }
+        performance[engine] = {
+            "win_rate": round(win_rate, 2),
+            "total_audited": total,
+            "status": new_status,
+            "last_audit": datetime.now().isoformat()
+        }
 
-                logging.info(f"AUDIT {strat_id.upper()}: {wr}% WR | Status: {new_status}")
-
-            except Exception as e:
-                logging.error(f"Error auditing {strat_id}: {e}")
-
-    finally:
-        conn.close()
-
-    # Save the updated performance journal
+    # Save to performance.json
     with open(PERFORMANCE_FILE, "w") as f:
-        json.dump(performance_report, f, indent=4)
-
-    logging.info("Audit cycle complete.")
+        json.dump(performance, f, indent=4)
+    
+    conn.close()
+    logging.info("--- AUDIT COMPLETE: PERFORMANCE.JSON UPDATED ---")
 
 if __name__ == "__main__":
-    audit_all()
+    run_audit()
