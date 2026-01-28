@@ -9,9 +9,15 @@ on:
 jobs:
   nexus_operations:
     runs-on: ubuntu-latest
+    # Granting write permissions explicitly for the GITHUB_TOKEN
+    permissions:
+      contents: write
+      
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for successful rebasing
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
@@ -23,8 +29,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-cache-dir -r requirements.txt
 
-      # --- CRITICAL: DATABASE SCHEMA REPAIR ---
-      # This prevents the "no such column: rsi" error
+      # --- DATABASE SCHEMA REPAIR ---
       - name: Database Schema Migration
         run: |
           python -c "import sqlite3; conn=sqlite3.connect('nexus.db'); cursor=conn.cursor(); \
@@ -32,8 +37,8 @@ jobs:
           [cursor.execute(f'ALTER TABLE signals ADD COLUMN {k} {v}') for k,v in cols.items() if k not in [i[1] for i in cursor.execute('PRAGMA table_info(signals)')]]; \
           conn.commit(); conn.close()"
 
-      # --- PHASE 4: MAINTENANCE (Daily) ---
-      - name: Run Maintenance (Custodian)
+      # --- PHASE 4: MAINTENANCE ---
+      - name: Run Maintenance
         if: github.event.schedule == '30 23 * * *' || github.event_name == 'workflow_dispatch'
         run: python maintenance.py
 
@@ -43,7 +48,7 @@ jobs:
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
-      # --- PHASE 1 & 3: ENGINE EXECUTION ---
+      # --- PHASE 1 & 3: ENGINES ---
       - name: Run AI Engine
         run: python ai_engine.py
         env:
@@ -61,16 +66,39 @@ jobs:
       - name: Run Auditor
         run: python audit_intelligence.py
 
-      # --- PHASE 3: TRAINING (Daily) ---
+      # --- PHASE 3: TRAINING ---
       - name: Run AI Retraining
         if: github.event.schedule == '30 23 * * *' || github.event_name == 'workflow_dispatch'
         run: python train_brain.py
 
-      # --- PERSISTENCE ---
+      # --- PERSISTENCE WITH RETRY & REBASE ---
       - name: Commit & Push Changes
         run: |
           git config --local user.email "cto-bot@nexus-ai.com"
           git config --local user.name "Nexus CTO Bot"
+          
           git add .
-          git commit -m "Nexus Cycle: DB Update & Brain Retrain [skip ci]" || echo "No changes"
-          git push
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Nexus Cycle: DB Update & Brain Retrain [skip ci]"
+            
+            # Robust Push with Retry Logic
+            SUCCESS=false
+            for i in {1..3}; do
+              echo "Attempt $i to push changes..."
+              git pull --rebase origin main
+              if git push origin main; then
+                SUCCESS=true
+                break
+              fi
+              echo "Push failed, sleeping 5s..."
+              sleep 5
+            done
+            
+            if [ "$SUCCESS" = false ]; then
+              echo "Failed to push after 3 attempts."
+              exit 1
+            fi
+          fi
