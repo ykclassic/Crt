@@ -2,7 +2,9 @@ import os
 
 # --- DATABASE & FILES ---
 DB_FILE = "nexus.db"
-MODEL_FILE = "nexus_brain.pkl"  # Now contains the Ensemble object
+HISTORY_DB = "nexus_history.db" # New for Phase 4
+MODEL_FILE = "nexus_brain.pkl"
+BACKUP_DIR = "backups/"        # New for Phase 4
 PERFORMANCE_FILE = "performance.json"
 
 # --- API & NOTIFICATIONS ---
@@ -10,7 +12,6 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "YOUR_DISCORD_WEBHOOK_HERE")
 
 # --- ASSET SETTINGS ---
 ASSETS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
-DEFAULT_TIMEFRAME = "4h"
 
 # --- ENGINE REGISTRY ---
 ENGINES = {
@@ -20,16 +21,13 @@ ENGINES = {
     "rangemaster": "Nexus Rangemaster"
 }
 
-# --- PHASE 1, 2, 3 SETTINGS ---
-RISK_PER_TRADE = 0.02         
+# --- PERFORMANCE & RISK ---
 TOTAL_CAPITAL = 1000.0        
+RISK_PER_TRADE = 0.02         
 ATR_MULTIPLIER = 2.0          
 MIN_CONFIDENCE_FOR_SIZE_BOOST = 75.0  
 
-# Guardian Settings
-BTC_CRASH_THRESHOLD = -3.0    
-GLOBAL_VOLATILITY_CAP = 0.05  
-
-# Phase 3 Ensemble Settings
-VOTING_METHOD = 'soft'  # 'soft' uses weighted probabilities; 'hard' uses majority vote
-MIN_ENSEMBLE_CONFIDENCE = 55.0 # Only trade if the "Committee" is >55% sure
+# --- PHASE 4: MAINTENANCE SETTINGS ---
+MAX_SIGNAL_AGE_DAYS = 30      # Move to history after 30 days
+PENDING_CLEANUP_HOURS = 24    # Delete untriggered 1h signals after 24h
+BACKUP_COUNT = 5              # Keep the last 5 brain versions
