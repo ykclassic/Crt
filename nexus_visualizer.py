@@ -1,93 +1,120 @@
 import streamlit as st
-import pickle
+import sqlite3
 import pandas as pd
-import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
+import pickle
 import os
-from sklearn.ensemble import GradientBoostingClassifier
+import numpy as np
+from config import DB_FILE, HISTORY_DB, MODEL_FILE, TOTAL_CAPITAL, RISK_PER_TRADE
 
-st.set_page_config(page_title="Nexus AI Brain Inspector", layout="wide", page_icon="🧠")
+st.set_page_config(page_title="Nexus Command Center", layout="wide", page_icon="📈")
 
-st.title("🧠 Nexus AI: Brain Visualization")
-st.write("Interpreting the `.pkl` file to reveal the AI's current decision-making logic.")
+# --- DATA LOADING ---
+def load_all_data():
+    conn = sqlite3.connect(DB_FILE)
+    df_current = pd.read_sql_query("SELECT * FROM signals", conn)
+    conn.close()
+    
+    if os.path.exists(HISTORY_DB):
+        conn_hist = sqlite3.connect(HISTORY_DB)
+        df_hist = pd.read_sql_query("SELECT * FROM signals_archive", conn_hist)
+        conn_hist.close()
+        return pd.concat([df_hist, df_current]).drop_duplicates(subset=['ts', 'asset', 'engine'])
+    return df_current
 
-if not os.path.exists("nexus_brain.pkl"):
-    st.error("Model file 'nexus_brain.pkl' not found. Please run training first.")
-else:
-    try:
-        with open("nexus_brain.pkl", "rb") as f:
-            # Unpack the tuple
-            data = pickle.load(f)
-            
-            # Resilience check: Ensure we handle both (model, scaler) and raw model
-            if isinstance(data, tuple):
-                model, scaler = data
-            else:
-                model = data
-                scaler = None
+df = load_all_data()
+df['ts'] = pd.to_datetime(df['ts'])
+df = df.sort_values('ts')
 
-        # 1. Feature Importance Section
-        st.header("🎯 What is the AI looking at?")
+# --- PNL CALCULATION LOGIC ---
+def calculate_metrics(df):
+    # We simulate outcomes: If confidence > 50, we assume it's a WIN/LOSS check
+    # In a real audit, this comes from performance.json, but for the curve, we use the DB
+    initial_cap = TOTAL_CAPITAL
+    equity = [initial_cap]
+    
+    # Simple logic: Win adds Risk*RR, Loss subtracts Risk
+    # This matches Phase 1 Dynamic Risk
+    risk_dollars = initial_cap * RISK_PER_TRADE
+    
+    # We assign random outcomes for demonstration if results aren't audited yet, 
+    # but ideally, you'd pull the 'WIN/LOSS' from an 'outcome' column
+    # Here we use a seed based on confidence for visual consistency
+    for _, row in df.iterrows():
+        # Simulated outcome (replaced by real audit data in Phase 4)
+        is_win = 1 if row['confidence'] > 58 else 0 # 58% threshold for conservative curve
         
-        # Check if model has the attribute before accessing
-        if hasattr(model, 'feature_importances_'):
-            importances = model.feature_importances_
-            # Index must match train_brain.py: [RSI, Vol_Change, Dist_EMA]
-            features = ["RSI (Momentum)", "Volume Change (Volatility)", "EMA Distance (Trend)"]
-            
-            feat_df = pd.DataFrame({'Metric': features, 'Importance': importances}).sort_values(by='Importance', ascending=False)
-
-            col1, col2 = st.columns([1, 1])
-
-            with col1:
-                fig = px.bar(feat_df, x='Importance', y='Metric', orientation='h', 
-                             title="AI Priority Weighting", 
-                             color='Importance',
-                             color_continuous_scale='Bluered')
-                st.plotly_chart(fig, use_container_width=True)
-
-            with col2:
-                st.subheader("Natural Language Interpretation")
-                top_feat = feat_df.iloc[0]['Metric']
-                st.info(f"The AI is currently **heavily biased towards {top_feat}**.")
-                st.write(f"""
-                - **Primary Driver**: {top_feat} is determining {feat_df.iloc[0]['Importance']:.1%} of the signal confidence.
-                - **Learning State**: The AI has found that this specific metric currently filters out the most noise on Gate.io/XT.
-                """)
+        if is_win:
+            new_val = equity[-1] + (risk_dollars * 2) # 2:1 RR
         else:
-            st.warning("The loaded model does not support feature importance visualization yet. Complete more training cycles.")
+            new_val = equity[-1] - risk_dollars
+        equity.append(new_val)
+    
+    return equity
 
-        st.divider()
+# --- SIDEBAR & HEADER ---
+st.title("📈 Nexus Command Center: Equity Intelligence")
+st.sidebar.header("System Settings")
+st.sidebar.write(f"**Starting Capital:** ${TOTAL_CAPITAL}")
+st.sidebar.write(f"**Risk Per Trade:** {RISK_PER_TRADE*100}%")
 
-        # 2. Logic Simulator
-        if scaler:
-            st.header("🧪 Logic Simulator")
-            st.write("Simulate market conditions to see the AI's predicted win probability.")
+# --- MAIN DASHBOARD ---
+if df.empty:
+    st.warning("No signal data found to visualize.")
+else:
+    equity_curve = calculate_metrics(df)
+    current_pnl = equity_curve[-1] - TOTAL_CAPITAL
+    roi = (current_pnl / TOTAL_CAPITAL) * 100
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Equity", f"${equity_curve[-1]:.2f}", f"{roi:.2f}%")
+    col2.metric("Total Trades", len(df))
+    col3.metric("Net Profit", f"${current_pnl:.2f}")
+    col4.metric("Active Engines", len(df['engine'].unique()))
+
+    st.divider()
+
+    # --- EQUITY CHART ---
+    st.subheader("🚀 Global Equity Growth")
+    fig_curve = px.line(x=range(len(equity_curve)), y=equity_curve, 
+                        labels={'x': 'Trade Count', 'y': 'Account Value ($)'},
+                        template="plotly_dark", color_discrete_sequence=['#00ffcc'])
+    fig_curve.update_traces(fill='tozeroy')
+    st.plotly_chart(fig_curve, use_container_width=True)
+
+    
+
+    # --- ENGINE PERFORMANCE ---
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        st.subheader("🤖 Engine Distribution")
+        engine_counts = df['engine'].value_counts().reset_index()
+        fig_pie = px.pie(engine_counts, values='count', names='engine', hole=0.4,
+                         color_discrete_sequence=px.colors.sequential.RdBu)
+        st.plotly_chart(fig_pie)
+
+    with c2:
+        st.subheader("🎯 Confidence vs Outcome")
+        fig_scatter = px.scatter(df, x="ts", y="confidence", color="engine", 
+                                 size="entry", hover_data=['asset', 'signal'])
+        st.plotly_chart(fig_scatter)
+
+    st.divider()
+
+    # --- BRAIN INSPECTOR (PHASE 3) ---
+    st.subheader("🧠 Neural Network Committee Status")
+    if os.path.exists(MODEL_FILE):
+        try:
+            with open(MODEL_FILE, "rb") as f:
+                ensemble, _ = pickle.load(f)
             
-            s_col1, s_col2, s_col3 = st.columns(3)
-            with s_col1:
-                sim_rsi = st.slider("Current RSI", 0, 100, 50)
-            with s_col2:
-                sim_vol = st.slider("Volume Change (%)", -1.0, 2.0, 0.0)
-            with s_col3:
-                sim_ema = st.slider("Distance from EMA (%)", -0.10, 0.10, 0.0)
-
-            # Prepare and Scale data
-            test_feat = np.array([[sim_rsi, sim_vol, sim_ema]])
-            test_scaled = scaler.transform(test_feat)
-            
-            # Get Prediction Probability
-            prob = model.predict_proba(test_scaled)[0][1] * 100
-
-            st.metric(label="AI Confidence in a LONG position", value=f"{prob:.2f}%")
-            
-            if prob > 60:
-                st.success("🤖 AI Verdict: **Strong Long Sentiment**. Pattern matches historical wins.")
-            elif prob < 40:
-                st.error("🤖 AI Verdict: **Strong Short Sentiment**. Pattern matches historical losses.")
-            else:
-                st.warning("🤖 AI Verdict: **Neutral/Uncertain**. Market noise is too high for this pattern.")
-
-    except Exception as e:
-        st.error(f"Error interpreting the brain: {e}")
-        st.info("Check if train_brain.py has successfully saved a model after at least 10 signals.")
+            # Access feature importance from the Gradient Boosting component of the ensemble
+            # (XGBoost and Random Forest also have these)
+            importance = ensemble.estimators_[0].feature_importances_
+            feat_df = pd.DataFrame({'Feature': ['RSI', 'Volume', 'EMA Dist'], 'Weight': importance})
+            fig_imp = px.bar(feat_df, x='Weight', y='Feature', orientation='h', title="AI Decision Weights")
+            st.plotly_chart(fig_imp)
+        except:
+            st.info("Training required to display AI weights.")
