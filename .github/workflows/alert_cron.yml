@@ -1,86 +1,78 @@
-name: Nexus Intelligence Suite
+name: Nexus AI Full Suite Orchestration
 
 on:
   schedule:
-    - cron: '0 * * * *'       # Hourly: Run all engines + consensus + dispatcher
-    - cron: '0 0 * * *'       # Daily: Retrain AI brain (midnight UTC)
-    - cron: '0 20 * * 0'      # Weekly Report: Every Sunday 8PM UTC
-    - cron: '0 20 1 * *'      # Monthly Report: 1st of the month 8PM UTC
-  workflow_dispatch:         # Manual trigger for instant run/report
-
-permissions:
-  contents: write            # Required for pushing database updates back to the repo
+    # Run every hour to check market health and generate signals
+    - cron: '0 * * * *'
+    # Run a full maintenance and brain retraining cycle at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allows manual trigger for testing
 
 jobs:
-  nexus-ops:
+  nexus_operations:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0      # Necessary for clean rebase logic
 
-      - name: Python Setup
+      - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.10'
+          cache: 'pip'
 
-      - name: Install Dependencies
+      - name: Install System Dependencies
         run: |
-          pip install pandas ccxt requests plotly streamlit \
-                      numpy xgboost scikit-learn
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Pre-Flight Sanity Check
-        run: python sanity_check.py
+      # --- STEP 1: MAINTENANCE (PHASE 4) ---
+      # Run cleanup first to ensure no "Ghost Signals" contaminate the session
+      - name: Run Phase 4 Custodian (Daily)
+        if: github.event.schedule == '0 0 * * *' || github.event_name == 'workflow_dispatch'
+        run: python maintenance.py
 
-      - name: Hourly Intelligence Cycle
-        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 * * * *')
+      # --- STEP 2: MARKET HEALTH (PHASE 2) ---
+      # The Guardian checks for BTC crashes before engines are allowed to run
+      - name: Run Phase 2 Market Guardian
+        run: python market_guardian.py
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+
+      # --- STEP 3: SIGNAL GENERATION (PHASES 1 & 3) ---
+      # Engines generate signals using Ensemble logic and Dynamic Risk sizing
+      - name: Run Nexus AI & Engines
         run: |
-          # Core Engines
-          python run_alerts.py          
           python ai_engine.py
-
-          # Logic Layer
-          python run_consensus.py
-          python nexus_dispatcher.py
-          python audit_intelligence.py
-
-      - name: Daily AI Retraining
-        if: github.event_name == 'schedule' && github.event.schedule == '0 0 * * *'
-        run: |
-          if [ -f "train_brain.py" ]; then python train_brain.py; fi
-
-      - name: Generate & Send Reports
-        if: >
-          github.event_name == 'workflow_dispatch' ||
-          github.event.schedule == '0 20 * * 0' ||
-          github.event.schedule == '0 20 1 * *'
+          python hybrid_engine.py
+          python range_engine.py
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: |
-          python nexus_reporter.py --full
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
-      - name: Daily Maintenance
-        if: github.event_name == 'schedule' && github.event.schedule == '0 0 * * *'
-        run: |
-          python maintenance.py
+      # --- STEP 4: CONSENSUS FILTERING ---
+      # Filter entries against 4h macro trends for "Diamond" status
+      - name: Run Consensus Filter
+        run: python run_consensus.py
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
-      - name: Sync Data to Repo
-        if: always()          # Run even if a strategy engine has a minor failure
+      # --- STEP 5: PERFORMANCE AUDIT ---
+      # Update win rates and manage the Kill-Switch status
+      - name: Run Performance Audit
+        run: python audit_intelligence.py
+
+      # --- STEP 6: AI RETRAINING (PHASE 3) ---
+      # Retrain the Ensemble committee on updated audited data
+      - name: Run Phase 3 Ensemble Retraining (Daily)
+        if: github.event.schedule == '0 0 * * *' || github.event_name == 'workflow_dispatch'
+        run: python train_brain.py
+
+      # --- STEP 7: STATE PERSISTENCE ---
+      # Save all database updates, performance files, and brain backups back to the repo
+      - name: Commit & Push Changes
         run: |
-          git config --local user.name "github-actions[bot]"
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Use wildcards and silence errors to avoid 'pathspec' exit code 128
-          # This stages only what actually exists
-          git add *.db *.json *.pkl 2>/dev/null || echo "No data files found to stage."
-          
-          if git diff --cached --quiet; then
-            echo "No data changes detected. Skipping sync."
-          else
-            git commit -m "Auto-sync: Intelligence update $(date +'%Y-%m-%d %H:%M UTC')"
-            git pull --rebase origin main
-            git push origin main
-          fi
+          git config --local user.email "cto-bot@nexus-ai.com"
+          git config --local user.name "Nexus CTO Bot"
+          git add nexus.db nexus_history.db nexus_brain.pkl performance.json backups/
+          git commit -m "Nexus Auto-Update: Signals, Audit, and Brain [skip ci]" || echo "No changes to commit"
+          git push
