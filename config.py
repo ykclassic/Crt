@@ -2,7 +2,7 @@ import os
 
 # --- DATABASE & FILES ---
 DB_FILE = "nexus.db"
-MODEL_FILE = "nexus_brain.pkl"
+MODEL_FILE = "nexus_brain.pkl"  # Now contains the Ensemble object
 PERFORMANCE_FILE = "performance.json"
 
 # --- API & NOTIFICATIONS ---
@@ -15,29 +15,21 @@ DEFAULT_TIMEFRAME = "4h"
 # --- ENGINE REGISTRY ---
 ENGINES = {
     "core": "Nexus Core",
-    "ai": "Nexus AI (Phase 1)",
+    "ai": "Nexus AI (Phase 3 Ensemble)",
     "hybrid_v1": "Nexus Hybrid",
     "rangemaster": "Nexus Rangemaster"
 }
 
-# --- PERFORMANCE & KILL-SWITCH SETTINGS ---
-KILL_THRESHOLD = 45.0      
-RECOVERY_THRESHOLD = 52.0  
-MIN_TRADES_FOR_AUDIT = 5   
-
-# --- PHASE 1: DYNAMIC RISK MANAGEMENT ---
-TOTAL_CAPITAL = 1000.0        
+# --- PHASE 1, 2, 3 SETTINGS ---
 RISK_PER_TRADE = 0.02         
+TOTAL_CAPITAL = 1000.0        
 ATR_MULTIPLIER = 2.0          
-RR_RATIO = 2.0                
 MIN_CONFIDENCE_FOR_SIZE_BOOST = 75.0  
 
-# --- PHASE 2: GLOBAL REGIME FILTER (CIRCUIT BREAKER) ---
-BTC_CRASH_THRESHOLD = -3.0    # % drop in 1h to trigger Global Stop
-GLOBAL_VOLATILITY_CAP = 0.05  # Max allowed ATR % before market is "Too Risky"
-REGIME_CHECK_INTERVAL = "1h"
+# Guardian Settings
+BTC_CRASH_THRESHOLD = -3.0    
+GLOBAL_VOLATILITY_CAP = 0.05  
 
-# --- FEATURE SETTINGS ---
-ATR_PERIOD = 14               
-EMA_PERIOD = 20               
-RSI_PERIOD = 14               
+# Phase 3 Ensemble Settings
+VOTING_METHOD = 'soft'  # 'soft' uses weighted probabilities; 'hard' uses majority vote
+MIN_ENSEMBLE_CONFIDENCE = 55.0 # Only trade if the "Committee" is >55% sure
