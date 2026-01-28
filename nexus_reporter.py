@@ -1,37 +1,46 @@
-import sqlite3
-import pandas as pd
+import pickle
+import os
+import logging
+from config import MODEL_FILE, WEBHOOK_URL
 import requests
-from config import DB_FILE, WEBHOOK_URL
 
-def send_to_discord(msg):
-    if WEBHOOK_URL:
-        requests.post(WEBHOOK_URL, json={"content": msg})
+def get_ai_narrative():
+    if not os.path.exists(MODEL_FILE):
+        return "AI is currently in 'Observation Mode' (No brain file found)."
 
-def generate_report():
-    conn = sqlite3.connect(DB_FILE)
     try:
-        # Pull the 5 most recent signals from the database
-        df = pd.read_sql_query("SELECT * FROM signals ORDER BY ts DESC LIMIT 5", conn)
+        with open(MODEL_FILE, "rb") as f:
+            model, _ = pickle.load(f)
         
-        if df.empty:
-            send_to_discord("📊 **Nexus Report**: No new signals found in the database.")
-            return
+        # Features index must match your train_brain.py: [RSI, Vol_Change, Dist_EMA]
+        importances = model.feature_importances_
+        traits = {
+            "Momentum (RSI)": importances[0],
+            "Volatility (Volume)": importances[1],
+            "Trend (EMA Distance)": importances[2]
+        }
+        
+        # Sort to find the dominant trait
+        top_trait = max(traits, key=traits.get)
+        
+        # Natural Language Templates
+        if top_trait == "Momentum (RSI)":
+            narrative = "The AI is currently **Aggressive**. It has learned that RSI extremes are the best predictors for wins in this market."
+        elif top_trait == "Volatility (Volume)":
+            narrative = "The AI is currently **Reactive**. It is prioritizing high-volume spikes over price patterns to filter out fakeouts."
+        else:
+            narrative = "The AI is currently **Conservative**. It is focusing on 'Mean Reversion' (EMA Distance), waiting for prices to overextend before signaling."
 
-        report = "📊 **NEXUS SYSTEM REPORT**\n----------------------------\n"
-        for _, row in df.iterrows():
-            emoji = "🟢" if row['signal'] == "LONG" else "🔴"
-            report += (f"{emoji} **{row['asset']}** ({row['timeframe']})\n"
-                       f"Type: {row['signal']} | Entry: {row['entry']:.4f}\n"
-                       f"Engine: `{row['engine']}` | Time: {row['ts'][:16]}\n\n")
-        
-        send_to_discord(report)
-        # Also save a CSV backup for your GitHub records
-        df.to_csv(f"Nexus_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", index=False)
-        
+        return f"🧠 **AI Intelligence Update**:\n> {narrative}\n> *Top Priority: {top_trait} ({traits[top_trait]:.1%})*"
+
     except Exception as e:
-        print(f"Report Error: {e}")
-    finally:
-        conn.close()
+        return f"⚠️ Could not interpret AI brain: {e}"
+
+def send_sunday_report():
+    ai_status = get_ai_narrative()
+    full_report = f"📊 **NEXUS WEEKLY STRATEGIC BRIEF**\n\n{ai_status}\n\n..."
+    # Existing reporting logic here
+    requests.post(WEBHOOK_URL, json={"content": full_report})
 
 if __name__ == "__main__":
-    generate_report()
+    send_sunday_report()
