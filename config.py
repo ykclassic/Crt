@@ -1,33 +1,40 @@
 import os
 
-# --- DATABASE & STORAGE ---
+# --- DATABASE & FILES ---
 DB_FILE = "nexus.db"
 MODEL_FILE = "nexus_brain.pkl"
 PERFORMANCE_FILE = "performance.json"
-DAYS_TO_KEEP = 7  # Maintenance cleanup threshold
 
-# --- NOTIFICATIONS ---
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+# --- API & NOTIFICATIONS ---
+# Replace with your actual Discord Webhook URL or use Environment Variables
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "YOUR_DISCORD_WEBHOOK_HERE")
 
-# --- ASSETS & TIMEFRAMES ---
-ASSETS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT']
-DEFAULT_TIMEFRAME = '1h'
-TIMEFRAMES = ['15m', '1h', '4h']
+# --- ASSET SETTINGS ---
+ASSETS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
+DEFAULT_TIMEFRAME = "4h"  # Used by Core Engine for macro trend
 
 # --- ENGINE REGISTRY ---
-# Must match the STRATEGY_ID in each engine file for the auditor to work
 ENGINES = {
     "core": "Nexus Core",
-    "ai": "Nexus AI Predictor",
-    "hybrid_v1": "Nexus Hybrid V1",
+    "ai": "Nexus AI (Phase 1)",
+    "hybrid_v1": "Nexus Hybrid",
     "rangemaster": "Nexus Rangemaster"
 }
 
-# --- STRATEGY PARAMETERS ---
-ATR_PERIOD = 14
-ATR_MULTIPLIER_SL = 1.5
-RR_RATIO = 2.0
+# --- PERFORMANCE & KILL-SWITCH SETTINGS ---
+# Thresholds for the Auditor to disable/enable engines
+KILL_THRESHOLD = 45.0      # Disable engine if Win Rate falls below 45%
+RECOVERY_THRESHOLD = 52.0  # Re-enable engine if Win Rate climbs back to 52%
+MIN_TRADES_FOR_AUDIT = 5   # Minimum trades before the Kill-Switch can trigger
 
-# --- PERFORMANCE AUDIT THRESHOLDS ---
-KILL_THRESHOLD = 40.0      # Disable engine if Win Rate falls below this %
-RECOVERY_THRESHOLD = 50.0  # Re-enable engine if Win Rate recovers to this %
+# --- PHASE 1: DYNAMIC RISK MANAGEMENT ---
+TOTAL_CAPITAL = 1000.0        # Your total trading bankroll in USDT
+RISK_PER_TRADE = 0.02         # Risk 2% of capital per trade ($20 per trade on $1000)
+ATR_MULTIPLIER = 2.0          # Stop Loss = 2.0 * Average True Range (Volatility)
+RR_RATIO = 2.0                # Risk:Reward Ratio (Target 2x your risk)
+MIN_CONFIDENCE_FOR_SIZE_BOOST = 75.0  # AI confidence required to increase size
+
+# --- FEATURE SETTINGS (For AI Training) ---
+ATR_PERIOD = 14               # Standard period for volatility calculation
+EMA_PERIOD = 20               # Trend baseline for AI distance calculation
+RSI_PERIOD = 14               # Standard momentum period
