@@ -2,7 +2,7 @@ name: Nexus AI Full Suite Orchestration
 
 on:
   schedule:
-    - cron: '0 * * * *'   # Hourly Signal Generation
+    - cron: '0 * * * *'   # Hourly Signal Generation & Dispatch
     - cron: '30 23 * * *' # Daily Maintenance & Retraining at 11:30 PM
   workflow_dispatch:      # Manual Trigger
 
@@ -23,7 +23,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-cache-dir -r requirements.txt
 
-      # --- PHASE 4: MAINTENANCE ---
+      # --- CRITICAL: DATABASE SCHEMA REPAIR ---
+      # This prevents the "no such column: rsi" error
+      - name: Database Schema Migration
+        run: |
+          python -c "import sqlite3; conn=sqlite3.connect('nexus.db'); cursor=conn.cursor(); \
+          cols={'rsi':'REAL','vol_change':'REAL','dist_ema':'REAL','result':'INTEGER','engine':'TEXT','confidence':'REAL','reason':'TEXT'}; \
+          [cursor.execute(f'ALTER TABLE signals ADD COLUMN {k} {v}') for k,v in cols.items() if k not in [i[1] for i in cursor.execute('PRAGMA table_info(signals)')]]; \
+          conn.commit(); conn.close()"
+
+      # --- PHASE 4: MAINTENANCE (Daily) ---
       - name: Run Maintenance (Custodian)
         if: github.event.schedule == '30 23 * * *' || github.event_name == 'workflow_dispatch'
         run: python maintenance.py
@@ -35,10 +44,16 @@ jobs:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
       # --- PHASE 1 & 3: ENGINE EXECUTION ---
-      - name: Run AI & Hybrid Engines
+      - name: Run AI Engine
+        run: python ai_engine.py
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+
+      # --- PHASE 3: CONSENSUS & DISPATCH ---
+      - name: Run Consensus & Dispatcher
         run: |
-          python ai_engine.py
-          python hybrid_engine.py
+          python run_consensus.py
+          python nexus_dispatcher.py
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
@@ -46,14 +61,10 @@ jobs:
       - name: Run Auditor
         run: python audit_intelligence.py
 
-      # --- PHASE 3: TRAINING (With NaN Protection) ---
-      - name: Run AI Retraining (Daily)
+      # --- PHASE 3: TRAINING (Daily) ---
+      - name: Run AI Retraining
         if: github.event.schedule == '30 23 * * *' || github.event_name == 'workflow_dispatch'
         run: python train_brain.py
-
-      # --- PHASE 5: SYSTEM HEALTH DIAGNOSTIC ---
-      - name: Run Health Check (Sync to Visualizer)
-        run: python health_check.py
 
       # --- PERSISTENCE ---
       - name: Commit & Push Changes
@@ -61,5 +72,5 @@ jobs:
           git config --local user.email "cto-bot@nexus-ai.com"
           git config --local user.name "Nexus CTO Bot"
           git add .
-          git commit -m "Nexus Daily Cycle: Signal Update & Health Check [skip ci]" || echo "No changes to commit"
+          git commit -m "Nexus Cycle: DB Update & Brain Retrain [skip ci]" || echo "No changes"
           git push
