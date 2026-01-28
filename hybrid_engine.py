@@ -1,19 +1,25 @@
 import ccxt
 import pandas as pd
-import numpy as np
 import sqlite3
-import requests
 import logging
+import json
+import os
+import requests
 from datetime import datetime
-from config import (
-    DB_FILE, WEBHOOK_URL, ENGINES, 
-    ATR_MULTIPLIER_SL, RR_RATIO, ASSETS
-)
+from config import DB_FILE, WEBHOOK_URL, ENGINES, ASSETS, PERFORMANCE_FILE
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
 STRATEGY_ID = "hybrid_v1"
-APP_NAME = ENGINES.get("hybrid", "Nexus Hybrid")
+APP_NAME = ENGINES.get(STRATEGY_ID, "Nexus Hybrid")
+
+def is_engine_enabled():
+    if not os.path.exists(PERFORMANCE_FILE): return True
+    try:
+        with open(PERFORMANCE_FILE, "r") as f:
+            perf = json.load(f)
+            return perf.get(STRATEGY_ID, {}).get("status", "LIVE") == "LIVE"
+    except: return True
 
 def notify(msg):
     if WEBHOOK_URL:
@@ -22,55 +28,53 @@ def notify(msg):
         except Exception as e:
             logging.error(f"Discord notify failed: {e}")
 
-def run_hybrid():
-    # Using Gate.io for better volume analysis
+def run_hybrid_engine():
+    if not is_engine_enabled():
+        logging.warning(f"{APP_NAME} is in RECOVERY mode. Skipping.")
+        return
+
+    # Gate.io provides robust volume data
     ex = ccxt.gateio({"enableRateLimit": True})
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
     for asset in ASSETS:
         try:
-            # Fetch 1h timeframe for Hybrid strategy
-            data = ex.fetch_ohlcv(asset, '1h', limit=50)
-            df = pd.DataFrame(data, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
+            data = ex.fetch_ohlcv(asset, '1h', limit=100)
+            df = pd.DataFrame(data, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
             
-            # Indicators: EMA Cross + Volume Surge
-            df['ema8'] = df['close'].ewm(span=8).mean()
-            df['ema21'] = df['close'].ewm(span=21).mean()
-            df['vol_sma'] = df['volume'].rolling(20).mean()
+            # EMA Cross + Volume Analysis
+            df['ema8'] = df['c'].ewm(span=8).mean()
+            df['ema21'] = df['c'].ewm(span=21).mean()
+            df['vol_sma'] = df['v'].rolling(20).mean()
             
             last = df.iloc[-1]
             prev = df.iloc[-2]
-            
             signal = "NEUTRAL"
-            reason = "NONE"
 
-            # Logic: EMA Cross + Volume confirmation
-            if last['ema8'] > last['ema21'] and prev['ema8'] <= prev['ema21'] and last['volume'] > last['vol_sma']:
+            if last['ema8'] > last['ema21'] and prev['ema8'] <= prev['ema21'] and last['v'] > last['vol_sma']:
                 signal = "LONG"
-                reason = "Bullish EMA Cross + Vol Spike"
-            elif last['ema8'] < last['ema21'] and prev['ema8'] >= prev['ema21'] and last['volume'] > last['vol_sma']:
+                reason = "Bullish Cross + Vol Surge"
+            elif last['ema8'] < last['ema21'] and prev['ema8'] >= prev['ema21'] and last['v'] > last['vol_sma']:
                 signal = "SHORT"
-                reason = "Bearish EMA Cross + Vol Spike"
+                reason = "Bearish Cross + Vol Surge"
 
             if signal != "NEUTRAL":
-                entry = last['close']
-                # Standardized SL/TP logic
-                sl = entry * 0.98 if signal == "LONG" else entry * 1.02
-                tp = entry * 1.05 if signal == "LONG" else entry * 0.95
+                price = last['c']
+                sl = price * 0.98 if signal == "LONG" else price * 1.02
+                tp = price * 1.05 if signal == "LONG" else price * 0.95
 
                 cursor.execute("""
                     INSERT INTO signals (engine, asset, timeframe, signal, entry, sl, tp, confidence, reason, ts)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (STRATEGY_ID, asset, '1h', signal, entry, sl, tp, 65.0, reason, datetime.now().isoformat()))
-                
+                """, (STRATEGY_ID, asset, '1h', signal, price, sl, tp, 65.0, reason, datetime.now().isoformat()))
                 conn.commit()
-                notify(f"⚡ **Hybrid Signal**: {signal} {asset}\nReason: {reason}")
+                notify(f"⚡ **Hybrid Signal**: {signal} {asset} | `{reason}`")
 
         except Exception as e:
             logging.error(f"Hybrid Engine Error ({asset}): {e}")
-    
+
     conn.close()
 
 if __name__ == "__main__":
-    run_hybrid()
+    run_hybrid_engine()
