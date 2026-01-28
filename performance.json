@@ -1,35 +1,14 @@
 {
-    "nexus_core": {
-        "win_rate": 2.0,
-        "status": "RECOVERY",
-        "sample_size": 50,
-        "last_audit": "2026-01-24T06:32:14.574052"
-    },
-    "hybrid_v1": {
-        "win_rate": 50.0,
-        "status": "LIVE",
-        "sample_size": 0,
-        "last_audit": "2026-01-24T06:32:15.462242"
-    },
-    "nexus_ai": {
-        "win_rate": 50.0,
-        "status": "LIVE",
-        "sample_size": 0,
-        "last_audit": "2026-01-24T06:32:16.518356"
-    },
-    "rangemaster": {
-        "win_rate": 0.0,
-        "status": "LIVE",
-        "sample_size": 1,
-        "last_audit": "2026-01-24T06:32:15.813141"
-    },
     "ai": {
-        "win_rate": 50.0,
+        "win_rate": 0.0,
+        "total_trades": 0,
         "status": "LIVE",
-        "closed_sample": 0,
-        "wins": 0,
-        "losses": 0,
-        "ongoing": 3,
-        "last_audit": "2026-01-28T03:39:14.468859"
+        "last_updated": "2026-01-28T04:41:25.189904"
+    },
+    "nexus_core": {
+        "win_rate": 0.0,
+        "total_trades": 0,
+        "status": "RECOVERY",
+        "last_updated": "2026-01-28T04:41:25.885802"
     }
 }
