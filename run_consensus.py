@@ -2,105 +2,57 @@ import sqlite3
 import pandas as pd
 import requests
 import logging
-import os
-from datetime import datetime, timedelta
-from config import DB_FILE, WEBHOOK_URL, ENGINES
+from datetime import datetime
+from config import DB_FILE, WEBHOOK_URL
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 
-def notify_discord(message):
+def notify_diamond(msg):
     if WEBHOOK_URL:
-        try:
-            requests.post(WEBHOOK_URL, json={"content": message})
-        except Exception as e:
-            logging.error(f"Consensus notify failed: {e}")
+        requests.post(WEBHOOK_URL, json={"content": f"💎 **DIAMOND CONSENSUS ALERT**\n{msg}"})
 
-def get_latest_signals():
-    if not os.path.exists(DB_FILE):
-        logging.warning("Database not found. Skipping consensus.")
-        return pd.DataFrame()
-
+def run_consensus():
+    logging.info("--- STARTING MULTI-TIMEFRAME CONSENSUS ---")
     conn = sqlite3.connect(DB_FILE)
-    # Only look for signals from the last 4 hours for meaningful confluence
-    time_threshold = (datetime.now() - timedelta(hours=4)).isoformat()
     
-    try:
-        df = pd.read_sql_query("""
-            SELECT asset, signal, confidence, reason, ts, engine 
-            FROM signals 
-            WHERE ts > ? 
-            ORDER BY ts DESC
-        """, conn, params=(time_threshold,))
-    except Exception as e:
-        logging.error(f"Database read error in consensus: {e}")
-        return pd.DataFrame()
-    finally:
-        conn.close()
+    # Get fresh 1h signals
+    entry_query = "SELECT * FROM signals WHERE timeframe = '1h' AND ts > datetime('now', '-2 hours')"
+    df_entries = pd.read_sql_query(entry_query, conn)
 
-    if df.empty:
-        return pd.DataFrame()
+    # Get latest Macro signals
+    macro_query = "SELECT * FROM signals WHERE timeframe IN ('4h', '1d') ORDER BY ts DESC"
+    df_macro = pd.read_sql_query(macro_query, conn)
 
-    # Get only the absolute latest signal per asset per engine
-    df = df.sort_values('ts').groupby(['asset', 'engine']).tail(1)
-    return df
-
-def run_consensus_check():
-    logging.info("Starting Nexus Consensus Analysis...")
-    df = get_latest_signals()
-    
-    if df.empty:
-        logging.info("No recent signals found for consensus analysis.")
+    if df_entries.empty:
+        logging.info("No fresh entries for consensus.")
         return
 
-    # Group by asset and signal direction (LONG/SHORT)
-    # We want to find where multiple engines agree on the same direction
-    summary = df.groupby(['asset', 'signal']).agg({
-        'engine': list,          # List of engine names
-        'confidence': 'mean',    # Average confidence score
-        'reason': lambda x: ' | '.join(set(x)) # Unique reasons combined
-    }).reset_index()
-
-    # Calculate count of agreeing engines
-    summary['count'] = summary['engine'].apply(len)
-
-    for _, row in summary.iterrows():
-        count = row['count']
-        asset = row['asset']
-        direction = row['signal']
-        avg_conf = round(row['confidence'], 2)
-        reasons = row['reason']
-        engine_names = ", ".join(row['engine'])
-
-        side_emoji = "🔵" if direction == "LONG" else "🟠"
+    for _, entry in df_entries.iterrows():
+        asset = entry['asset']
+        # Check for macro alignment
+        asset_macro = df_macro[df_macro['asset'] == asset]
         
-        # DIAMOND CONSENSUS (All currently active engines agree)
-        # Note: If you have 2 engines active, count >= 2 is a full agreement.
-        if count >= 3:
-            msg = (
-                f"💎 **[URGENT: DIAMOND CONSENSUS]** 💎\n"
-                f"**STRATEGIC ALIGNMENT ON {asset}**\n"
-                f"Engines: `{engine_names}`\n"
-                f"{side_emoji} Signal: **{direction}**\n"
-                f"📈 Avg Confidence: `{avg_conf}%`\n"
-                f"**Technical Confluence:** {reasons}\n"
-                f"⚠️ *Highest Tier Probability Setup*"
-            )
-            notify_discord(msg)
-            logging.info(f"Diamond consensus: {asset} {direction} ({count} engines)")
+        if not asset_macro.empty:
+            macro_signal = asset_macro.iloc[0]['signal']
+            macro_tf = asset_macro.iloc[0]['timeframe']
 
-        # GOLD CONSENSUS (Significant majority agreement)
-        elif count == 2:
-            msg = (
-                f"🥇 **[GOLD CONSENSUS]**\n"
-                f"**Engines `{engine_names}` align on {asset}**\n"
-                f"{side_emoji} Signal: **{direction}**\n"
-                f"Confidence: `{avg_conf}%`\n"
-                f"Basis: {reasons}"
-            )
-            notify_discord(msg)
-            logging.info(f"Gold consensus: {asset} {direction} (2 engines)")
+            if entry['signal'] == macro_signal:
+                # MATCH FOUND: 1h Entry aligns with 4h/1d Trend
+                msg = (
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"🌟 **Asset**: `{asset}`\n"
+                    f"🔥 **Signal**: `{entry['signal']}`\n"
+                    f"📍 **Entry Price**: `{entry['entry']:.4f}`\n"
+                    f"🎯 **Target**: `{entry['tp']:.4f}`\n"
+                    f"🛑 **Stop**: `{entry['sl']:.4f}`\n"
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"✅ **1h Logic**: {entry['engine']} ({entry['reason']})\n"
+                    f"✅ **{macro_tf} Trend**: Confirmed Bullish/Bearish Alignment"
+                )
+                notify_diamond(msg)
+                logging.info(f"Diamond Match for {asset}")
 
-    logging.info("Consensus check complete.")
+    conn.close()
 
 if __name__ == "__main__":
-    run_consensus_check()
+    run_consensus()
