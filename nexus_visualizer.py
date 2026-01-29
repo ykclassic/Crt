@@ -2,112 +2,113 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import plotly.express as px
-import pickle
+import plotly.graph_objects as go
 import os
 import json
-from datetime import datetime
-from config import DB_FILE, MODEL_FILE, PERFORMANCE_FILE, TOTAL_CAPITAL, RISK_PER_TRADE
+from config import DB_FILE, PERFORMANCE_FILE, TOTAL_CAPITAL
 
-# 1. Page Configuration
-st.set_page_config(
-    page_title="Nexus Command Center",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# 1. Page Config
+st.set_page_config(page_title="Nexus Command Center", page_icon="🤖", layout="wide")
 
-# 2. Robust Data Loaders
-def safe_query(query):
+# Custom CSS for Dark Mode Professionalism
+st.markdown("""
+    <style>
+    .main { background-color: #0e1117; }
+    .stMetric { background-color: #161b22; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
+    </style>
+    """, unsafe_content-allow-html=True)
+
+# 2. Data Access Layer
+def load_data():
     if not os.path.exists(DB_FILE):
+        st.error(f"Database {DB_FILE} not found. Run the engine first!")
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_FILE)
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query("SELECT * FROM signals ORDER BY ts DESC", conn)
         conn.close()
+        # Ensure timestamp is datetime
+        df['ts'] = pd.to_datetime(df['ts'])
         return df
     except Exception as e:
-        st.sidebar.error(f"DB Query Error: {e}")
+        st.error(f"Database Error: {e}")
         return pd.DataFrame()
 
-# 3. Sidebar: System Status
-st.sidebar.title("🛡️ System Health")
-
+# 3. Sidebar Status
+st.sidebar.title("🛡️ Nexus System Status")
 if os.path.exists(PERFORMANCE_FILE):
-    with open(PERFORMANCE_FILE, "r") as f:
-        perf_data = json.load(f)
-        for engine, stats in perf_data.items():
-            status = stats.get("status", "UNKNOWN")
-            color = "🟢" if status == "LIVE" else "🔴"
-            st.sidebar.markdown(f"{color} **{engine.upper()}**: {status}")
-            st.sidebar.caption(f"Win Rate: {stats.get('win_rate', 0)}% | Trades: {stats.get('total_trades', 0)}")
-else:
-    st.sidebar.warning("No performance data found.")
+    with open(PERFORMANCE_FILE, 'r') as f:
+        perf = json.load(f)
+        for engine, stats in perf.items():
+            st.sidebar.subheader(f"Engine: {engine.upper()}")
+            st.sidebar.write(f"📈 Win Rate: {stats.get('win_rate', 0):.1f}%")
+            st.sidebar.write(f"📝 Total Trades: {stats.get('total_trades', 0)}")
+            st.sidebar.progress(min(stats.get('win_rate', 0) / 100, 1.0))
 
-# 4. Main Dashboard Logic
-st.title("📈 Nexus Full-Suite Intelligence")
-
-# KPIs and Data Processing
-df = safe_query("SELECT * FROM signals")
+# 4. Dashboard Main Logic
+st.title("📈 Nexus AI Intelligence Dashboard")
+df = load_data()
 
 if df.empty:
-    st.info("👋 Welcome to Nexus. No trade data found yet. Run your engines to populate the dashboard.")
+    st.info("Waiting for first signals to be generated...")
 else:
-    # Calculate Equity Curve (Only on Audited Results)
-    df_audited = df[df['result'].notnull()].copy()
+    # --- TOP ROW: KPI METRICS ---
+    col1, col2, col3, col4 = st.columns(4)
     
-    if not df_audited.empty:
-        equity = [TOTAL_CAPITAL]
-        for _, row in df_audited.sort_values('ts').iterrows():
-            change = (TOTAL_CAPITAL * RISK_PER_TRADE * 2) if row['result'] == 1 else -(TOTAL_CAPITAL * RISK_PER_TRADE)
-            equity.append(equity[-1] + change)
-        
-        # Display Metrics
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Account Equity", f"${equity[-1]:.2f}", f"{(equity[-1]-TOTAL_CAPITAL):+.2f}")
-        m2.metric("Active Signals", len(df[df['result'].isnull()]))
-        m3.metric("Total Audited", len(df_audited))
-        
-        win_rate = (df_audited['result'].sum() / len(df_audited)) * 100
-        m4.metric("Global Win Rate", f"{win_rate:.1f}%")
+    total_signals = len(df)
+    diamond_signals = len(df[(df['confidence'] >= 90) | (df['confidence'] <= 10)])
+    latest_price = df['entry'].iloc[0]
+    
+    col1.metric("Total Signals", total_signals)
+    col2.metric("Diamond Consensus", diamond_signals)
+    col3.metric("Last Entry", f"${latest_price:,.2f}")
+    col4.metric("Market Status", "LIVE", delta="Active")
 
-        # Plot Equity
-        st.subheader("🚀 Equity Growth")
-        fig_equity = px.line(x=range(len(equity)), y=equity, template="plotly_dark", 
-                             labels={'x': 'Trade Count', 'y': 'Balance ($)'})
-        fig_equity.update_traces(line_color='#00ffcc', fill='tozeroy')
-        st.plotly_chart(fig_equity, use_container_width=True)
-    else:
-        st.warning("Signals detected, but none have been audited yet. Waiting for price to hit TP/SL.")
-
-    # AI Feature Importance
+    # --- ROW 2: EQUITY & SIGNAL DISTRIBUTION ---
     st.divider()
-    col_left, col_right = st.columns(2)
+    left_col, right_col = st.columns([2, 1])
 
-    with col_left:
-        st.subheader("🧠 AI Brain Analysis")
-        if os.path.exists(MODEL_FILE):
-            try:
-                with open(MODEL_FILE, "rb") as f:
-                    pipeline = pickle.load(f)
-                
-                # Extracting feature importance from the model inside the pipeline
-                model = pipeline.named_steps['model']
-                # Gradient Boosting / Random Forest support
-                importances = None
-                if hasattr(model, 'feature_importances_'):
-                    importances = model.feature_importances_
-                elif hasattr(model, 'estimators_'): # Voting Classifier
-                    importances = model.estimators_[0].feature_importances_
-                
-                if importances is not None:
-                    feat_df = pd.DataFrame({'Feature': ['RSI', 'Volume', 'EMA Dist'], 'Importance': importances})
-                    fig_brain = px.bar(feat_df, x='Importance', y='Feature', orientation='h', template="plotly_dark")
-                    st.plotly_chart(fig_brain, use_container_width=True)
-            except Exception as e:
-                st.error(f"Could not render Brain logic: {e}")
-        else:
-            st.info("AI Model not trained yet.")
+    with left_col:
+        st.subheader("📊 Signal Confidence Timeline")
+        # Visualizing signal strength over time
+        fig = px.scatter(df, x="ts", y="confidence", color="signal", 
+                         size="confidence", hover_data=['asset', 'entry'],
+                         color_discrete_map={"LONG": "#00ffcc", "SHORT": "#ff4b4b"},
+                         template="plotly_dark")
+        fig.add_hline(y=50, line_dash="dash", line_color="gray")
+        st.plotly_chart(fig, use_container_width=True)
 
-    with col_right:
-        st.subheader("📡 Recent Signals")
-        st.dataframe(df.sort_values('ts', ascending=False).head(10), use_container_width=True)
+    with right_col:
+        st.subheader("🎯 Asset Distribution")
+        asset_counts = df['asset'].value_counts()
+        fig_pie = px.pie(values=asset_counts.values, names=asset_counts.index, 
+                         hole=0.4, template="plotly_dark",
+                         color_discrete_sequence=px.colors.sequential.Cyan_r)
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    # --- ROW 3: RECENT SIGNALS TABLE ---
+    st.divider()
+    st.subheader("📑 Recent Intelligence Logs")
+    
+    # Clean up dataframe for display
+    display_df = df[['ts', 'asset', 'signal', 'entry', 'confidence', 'rsi', 'dist_ema']].copy()
+    display_df['rsi'] = display_df['rsi'].round(2)
+    display_df['dist_ema'] = (display_df['dist_ema'] * 100).round(2).astype(str) + '%'
+    
+    st.dataframe(display_df.head(20), use_container_width=True)
+
+    # --- ROW 4: FEATURE ANALYSIS ---
+    st.divider()
+    st.subheader("🧠 Technical Confluence Analysis")
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        st.write("RSI vs Confidence")
+        fig_rsi = px.density_heatmap(df, x="rsi", y="confidence", text_auto=True, template="plotly_dark")
+        st.plotly_chart(fig_rsi, use_container_width=True)
+        
+    with c2:
+        st.write("EMA Distance Distribution")
+        fig_ema = px.histogram(df, x="dist_ema", nbins=20, template="plotly_dark", color_discrete_sequence=['#00ffcc'])
+        st.plotly_chart(fig_ema, use_container_width=True)
+
