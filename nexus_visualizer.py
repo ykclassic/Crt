@@ -2,119 +2,112 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import pickle
 import os
-import numpy as np
-from config import DB_FILE, HISTORY_DB, MODEL_FILE, TOTAL_CAPITAL, RISK_PER_TRADE
+import json
+from datetime import datetime
+from config import DB_FILE, MODEL_FILE, PERFORMANCE_FILE, TOTAL_CAPITAL, RISK_PER_TRADE
 
-st.set_page_config(page_title="Nexus Command Center", layout="wide", page_icon="📈")
+# 1. Page Configuration
+st.set_page_config(
+    page_title="Nexus Command Center",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- DATA LOADING ---
-def load_all_data():
-    conn = sqlite3.connect(DB_FILE)
-    df_current = pd.read_sql_query("SELECT * FROM signals", conn)
-    conn.close()
-    
-    if os.path.exists(HISTORY_DB):
-        conn_hist = sqlite3.connect(HISTORY_DB)
-        df_hist = pd.read_sql_query("SELECT * FROM signals_archive", conn_hist)
-        conn_hist.close()
-        return pd.concat([df_hist, df_current]).drop_duplicates(subset=['ts', 'asset', 'engine'])
-    return df_current
+# 2. Robust Data Loaders
+def safe_query(query):
+    if not os.path.exists(DB_FILE):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+        return df
+    except Exception as e:
+        st.sidebar.error(f"DB Query Error: {e}")
+        return pd.DataFrame()
 
-df = load_all_data()
-df['ts'] = pd.to_datetime(df['ts'])
-df = df.sort_values('ts')
+# 3. Sidebar: System Status
+st.sidebar.title("🛡️ System Health")
 
-# --- PNL CALCULATION LOGIC ---
-def calculate_metrics(df):
-    # We simulate outcomes: If confidence > 50, we assume it's a WIN/LOSS check
-    # In a real audit, this comes from performance.json, but for the curve, we use the DB
-    initial_cap = TOTAL_CAPITAL
-    equity = [initial_cap]
-    
-    # Simple logic: Win adds Risk*RR, Loss subtracts Risk
-    # This matches Phase 1 Dynamic Risk
-    risk_dollars = initial_cap * RISK_PER_TRADE
-    
-    # We assign random outcomes for demonstration if results aren't audited yet, 
-    # but ideally, you'd pull the 'WIN/LOSS' from an 'outcome' column
-    # Here we use a seed based on confidence for visual consistency
-    for _, row in df.iterrows():
-        # Simulated outcome (replaced by real audit data in Phase 4)
-        is_win = 1 if row['confidence'] > 58 else 0 # 58% threshold for conservative curve
-        
-        if is_win:
-            new_val = equity[-1] + (risk_dollars * 2) # 2:1 RR
-        else:
-            new_val = equity[-1] - risk_dollars
-        equity.append(new_val)
-    
-    return equity
-
-# --- SIDEBAR & HEADER ---
-st.title("📈 Nexus Command Center: Equity Intelligence")
-st.sidebar.header("System Settings")
-st.sidebar.write(f"**Starting Capital:** ${TOTAL_CAPITAL}")
-st.sidebar.write(f"**Risk Per Trade:** {RISK_PER_TRADE*100}%")
-
-# --- MAIN DASHBOARD ---
-if df.empty:
-    st.warning("No signal data found to visualize.")
+if os.path.exists(PERFORMANCE_FILE):
+    with open(PERFORMANCE_FILE, "r") as f:
+        perf_data = json.load(f)
+        for engine, stats in perf_data.items():
+            status = stats.get("status", "UNKNOWN")
+            color = "🟢" if status == "LIVE" else "🔴"
+            st.sidebar.markdown(f"{color} **{engine.upper()}**: {status}")
+            st.sidebar.caption(f"Win Rate: {stats.get('win_rate', 0)}% | Trades: {stats.get('total_trades', 0)}")
 else:
-    equity_curve = calculate_metrics(df)
-    current_pnl = equity_curve[-1] - TOTAL_CAPITAL
-    roi = (current_pnl / TOTAL_CAPITAL) * 100
+    st.sidebar.warning("No performance data found.")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Equity", f"${equity_curve[-1]:.2f}", f"{roi:.2f}%")
-    col2.metric("Total Trades", len(df))
-    col3.metric("Net Profit", f"${current_pnl:.2f}")
-    col4.metric("Active Engines", len(df['engine'].unique()))
+# 4. Main Dashboard Logic
+st.title("📈 Nexus Full-Suite Intelligence")
 
-    st.divider()
+# KPIs and Data Processing
+df = safe_query("SELECT * FROM signals")
 
-    # --- EQUITY CHART ---
-    st.subheader("🚀 Global Equity Growth")
-    fig_curve = px.line(x=range(len(equity_curve)), y=equity_curve, 
-                        labels={'x': 'Trade Count', 'y': 'Account Value ($)'},
-                        template="plotly_dark", color_discrete_sequence=['#00ffcc'])
-    fig_curve.update_traces(fill='tozeroy')
-    st.plotly_chart(fig_curve, use_container_width=True)
-
+if df.empty:
+    st.info("👋 Welcome to Nexus. No trade data found yet. Run your engines to populate the dashboard.")
+else:
+    # Calculate Equity Curve (Only on Audited Results)
+    df_audited = df[df['result'].notnull()].copy()
     
+    if not df_audited.empty:
+        equity = [TOTAL_CAPITAL]
+        for _, row in df_audited.sort_values('ts').iterrows():
+            change = (TOTAL_CAPITAL * RISK_PER_TRADE * 2) if row['result'] == 1 else -(TOTAL_CAPITAL * RISK_PER_TRADE)
+            equity.append(equity[-1] + change)
+        
+        # Display Metrics
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Account Equity", f"${equity[-1]:.2f}", f"{(equity[-1]-TOTAL_CAPITAL):+.2f}")
+        m2.metric("Active Signals", len(df[df['result'].isnull()]))
+        m3.metric("Total Audited", len(df_audited))
+        
+        win_rate = (df_audited['result'].sum() / len(df_audited)) * 100
+        m4.metric("Global Win Rate", f"{win_rate:.1f}%")
 
-    # --- ENGINE PERFORMANCE ---
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        st.subheader("🤖 Engine Distribution")
-        engine_counts = df['engine'].value_counts().reset_index()
-        fig_pie = px.pie(engine_counts, values='count', names='engine', hole=0.4,
-                         color_discrete_sequence=px.colors.sequential.RdBu)
-        st.plotly_chart(fig_pie)
+        # Plot Equity
+        st.subheader("🚀 Equity Growth")
+        fig_equity = px.line(x=range(len(equity)), y=equity, template="plotly_dark", 
+                             labels={'x': 'Trade Count', 'y': 'Balance ($)'})
+        fig_equity.update_traces(line_color='#00ffcc', fill='tozeroy')
+        st.plotly_chart(fig_equity, use_container_width=True)
+    else:
+        st.warning("Signals detected, but none have been audited yet. Waiting for price to hit TP/SL.")
 
-    with c2:
-        st.subheader("🎯 Confidence vs Outcome")
-        fig_scatter = px.scatter(df, x="ts", y="confidence", color="engine", 
-                                 size="entry", hover_data=['asset', 'signal'])
-        st.plotly_chart(fig_scatter)
-
+    # AI Feature Importance
     st.divider()
+    col_left, col_right = st.columns(2)
 
-    # --- BRAIN INSPECTOR (PHASE 3) ---
-    st.subheader("🧠 Neural Network Committee Status")
-    if os.path.exists(MODEL_FILE):
-        try:
-            with open(MODEL_FILE, "rb") as f:
-                ensemble, _ = pickle.load(f)
-            
-            # Access feature importance from the Gradient Boosting component of the ensemble
-            # (XGBoost and Random Forest also have these)
-            importance = ensemble.estimators_[0].feature_importances_
-            feat_df = pd.DataFrame({'Feature': ['RSI', 'Volume', 'EMA Dist'], 'Weight': importance})
-            fig_imp = px.bar(feat_df, x='Weight', y='Feature', orientation='h', title="AI Decision Weights")
-            st.plotly_chart(fig_imp)
-        except:
-            st.info("Training required to display AI weights.")
+    with col_left:
+        st.subheader("🧠 AI Brain Analysis")
+        if os.path.exists(MODEL_FILE):
+            try:
+                with open(MODEL_FILE, "rb") as f:
+                    pipeline = pickle.load(f)
+                
+                # Extracting feature importance from the model inside the pipeline
+                model = pipeline.named_steps['model']
+                # Gradient Boosting / Random Forest support
+                importances = None
+                if hasattr(model, 'feature_importances_'):
+                    importances = model.feature_importances_
+                elif hasattr(model, 'estimators_'): # Voting Classifier
+                    importances = model.estimators_[0].feature_importances_
+                
+                if importances is not None:
+                    feat_df = pd.DataFrame({'Feature': ['RSI', 'Volume', 'EMA Dist'], 'Importance': importances})
+                    fig_brain = px.bar(feat_df, x='Importance', y='Feature', orientation='h', template="plotly_dark")
+                    st.plotly_chart(fig_brain, use_container_width=True)
+            except Exception as e:
+                st.error(f"Could not render Brain logic: {e}")
+        else:
+            st.info("AI Model not trained yet.")
+
+    with col_right:
+        st.subheader("📡 Recent Signals")
+        st.dataframe(df.sort_values('ts', ascending=False).head(10), use_container_width=True)
