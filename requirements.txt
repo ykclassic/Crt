@@ -1,4 +1,12 @@
-﻿streamlit
+ccxt==4.1.80
+pandas==2.2.0
+numpy==1.26.4
+scikit-learn==1.4.0
+xgboost==2.0.3
+requests==2.31.0
+plotly==5.18.0
+streamlit==1.30.0
+streamlit
 pandas
 numpy
 requests
@@ -36,5 +44,6 @@ scipy==1.11.4
 matplotlib==3.8.2
 psutil==5.9.8
 streamlit-autorefresh==1.0.1
+
 
 
