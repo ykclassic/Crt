@@ -2,9 +2,9 @@ name: Nexus AI Full Suite Orchestration
 
 on:
   schedule:
-    - cron: '0 * * * *'   
-    - cron: '30 23 * * *' 
-  workflow_dispatch:      
+    - cron: '0 * * * *'   # Hourly Cycle
+    - cron: '30 23 * * *' # Daily Maintenance
+  workflow_dispatch:      # Manual Trigger
 
 jobs:
   nexus_operations:
@@ -16,7 +16,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1 # We only need the latest state to overwrite
+          fetch-depth: 1 
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
@@ -28,7 +28,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-cache-dir -r requirements.txt
 
-      # --- DATABASE SCHEMA REPAIR ---
       - name: Database Schema Migration
         run: |
           python -c "import sqlite3; conn=sqlite3.connect('nexus.db'); cursor=conn.cursor(); \
@@ -47,7 +46,7 @@ jobs:
         env:
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
-      - name: Run AI Engine
+      - name: Run AI Engine (High-Quality Mode)
         run: python ai_engine.py
         env:
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -66,24 +65,19 @@ jobs:
         if: github.event.schedule == '30 23 * * *' || github.event_name == 'workflow_dispatch'
         run: python train_brain.py
 
-      # --- PERSISTENCE: OVERWRITE STRATEGY ---
+      # --- PERSISTENCE: OVERWRITE MODE ---
       - name: Commit & Push Changes
         run: |
           git config --local user.email "cto-bot@nexus-ai.com"
           git config --local user.name "Nexus CTO Bot"
-          
-          # Clean up any pycache that might have snuck in
           find . -name "__pycache__" -type d -exec rm -rf {} +
           
-          git add nexus.db performance.json nexus_brain.pkl
+          git add .
           
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
             git commit -m "Nexus Cycle: DB Update [skip ci]"
-            
-            # Use 'fetch' and 'reset' to avoid merge conflicts with binary files
-            # This ensures the DB in the runner overwrites the repo safely
             git fetch origin main
             git push origin main --force
           fi
