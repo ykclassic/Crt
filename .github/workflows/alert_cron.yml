@@ -9,7 +9,6 @@ on:
 jobs:
   nexus_operations:
     runs-on: ubuntu-latest
-    # Granting write permissions explicitly for the GITHUB_TOKEN
     permissions:
       contents: write
       
@@ -17,7 +16,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Fetch all history for successful rebasing
+          fetch-depth: 0 
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
@@ -41,18 +40,20 @@ jobs:
       - name: Run Maintenance
         if: github.event.schedule == '30 23 * * *' || github.event_name == 'workflow_dispatch'
         run: python maintenance.py
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
       # --- PHASE 2: MARKET GUARDIAN ---
       - name: Run Market Guardian
         run: python market_guardian.py
         env:
-          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
       # --- PHASE 1 & 3: ENGINES ---
       - name: Run AI Engine
         run: python ai_engine.py
         env:
-          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
       # --- PHASE 3: CONSENSUS & DISPATCH ---
       - name: Run Consensus & Dispatcher
@@ -60,7 +61,7 @@ jobs:
           python run_consensus.py
           python nexus_dispatcher.py
         env:
-          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
       # --- PERFORMANCE AUDIT ---
       - name: Run Auditor
@@ -84,7 +85,6 @@ jobs:
           else
             git commit -m "Nexus Cycle: DB Update & Brain Retrain [skip ci]"
             
-            # Robust Push with Retry Logic
             SUCCESS=false
             for i in {1..3}; do
               echo "Attempt $i to push changes..."
