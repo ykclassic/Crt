@@ -1,0 +1,18 @@
+[client]
+# Hides the "Manage App" button and developer options
+toolbarMode = "viewer"
+
+# Hides the full stack trace (code) when an error occurs
+showErrorDetails = false
+
+[server]
+# Ensures the app runs without trying to pop open a browser window on the server
+headless = true
+
+[client]
+# This hides the 'Manage App' button and the log drawer for users
+toolbarMode = "viewer"
+
+[ui]
+# This helps keep the sidebar behavior predictable
+hideSidebarNav = false
