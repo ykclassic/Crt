@@ -11,7 +11,6 @@ TOTAL_CAPITAL = 1000
 RISK_PER_TRADE = 0.02     
 
 def get_live_prices():
-    """Fetches real-time prices from Binance for outcome auditing."""
     try:
         response = requests.get("https://api.binance.com/api/3/ticker/price", timeout=5)
         data = response.json()
@@ -21,10 +20,8 @@ def get_live_prices():
         return {}
 
 def calculate_outcome(row, live_prices):
-    """Calculates if signal hit TP/SL and tracks duration."""
     asset = row['asset'].replace("/", "")
     current_price = live_prices.get(asset)
-    
     start_time = pd.to_datetime(row['ts'])
     now = datetime.now()
     duration_str = str(now - start_time).split('.')[0]
@@ -33,19 +30,14 @@ def calculate_outcome(row, live_prices):
         return "📡 SCANNING", "color: #8b949e", duration_str, None
 
     is_long = row['signal'].upper() == 'LONG'
-    tp = float(row['tp'])
-    sl = float(row['sl'])
+    tp, sl = float(row['tp']), float(row['sl'])
 
     if is_long:
-        if current_price >= tp:
-            return "✅ HIT TP", "color: #3fb950; font-weight: bold;", duration_str, 1
-        if current_price <= sl:
-            return "❌ HIT SL", "color: #f85149; font-weight: bold;", duration_str, 0
-    else: # SHORT
-        if current_price <= tp:
-            return "✅ HIT TP", "color: #3fb950; font-weight: bold;", duration_str, 1
-        if current_price >= sl:
-            return "❌ HIT SL", "color: #f85149; font-weight: bold;", duration_str, 0
+        if current_price >= tp: return "✅ HIT TP", "color: #3fb950; font-weight: bold;", duration_str, 1
+        if current_price <= sl: return "❌ HIT SL", "color: #f85149; font-weight: bold;", duration_str, 0
+    else:
+        if current_price <= tp: return "✅ HIT TP", "color: #3fb950; font-weight: bold;", duration_str, 1
+        if current_price >= sl: return "❌ HIT SL", "color: #f85149; font-weight: bold;", duration_str, 0
 
     return "🔵 ACTIVE", "color: #58a6ff;", duration_str, None
 
@@ -95,7 +87,7 @@ HTML_TEMPLATE = """
     </div>
 
     <div class="grid">
-        <div class="card"><div class="metric-label">Signal Density</div><div class="metric-value">{total_signals}</div></div>
+        <div class="card"><div class="metric-label">Signal Intensity</div><div class="metric-value">{total_signals}</div></div>
         <div class="card"><div class="metric-label">Live Win Rate</div><div class="metric-value" style="color: #3fb950;">{win_rate}%</div></div>
         <div class="card">
             <div class="metric-label">Sentiment Bias</div>
@@ -106,8 +98,12 @@ HTML_TEMPLATE = """
     </div>
 
     <div class="grid" style="grid-template-columns: 1.8fr 1.2fr;">
-        <div class="card"><div class="metric-label">Confidence Timeline</div>{history_plot}</div>
-        <div class="card"><div class="metric-label">Mindshare</div>{concentration_plot}</div>
+        <div class="card"><div class="metric-label">Intelligence Confidence Matrix</div>{history_plot}</div>
+        <div class="card">
+            <div class="metric-label">Elite Mindshare (85%+)</div>
+            {concentration_plot}
+            <div style="font-size:10px; color:#8b949e; text-align:center; margin-top:10px;">Showing concentration of High-Conviction setups</div>
+        </div>
     </div>
 
     <div class="card"><div class="metric-label">Performance Audit Trail</div>{table_html}</div>
@@ -144,8 +140,17 @@ def generate_dashboard():
         return f'<div class="conf-bg"><div class="conf-fill" style="width: {val}%; background: {color};"></div></div> {val}%'
     display_df['Confidence'] = display_df['confidence'].apply(render_conf)
 
+    # Filter for Elite Concentration
+    elite_df = df[df['confidence'] >= 85]
+    if elite_df.empty:
+        asset_counts = pd.DataFrame({'asset': ['Searching...'], 'count': [1]})
+    else:
+        asset_counts = elite_df['asset'].value_counts().reset_index()
+        asset_counts.columns = ['asset', 'count']
+
+    # General Metrics
     total = len(df)
-    elite = len(df[df['confidence'] >= 80])
+    elite_count = len(df[df['confidence'] >= 80])
     long_pct = round((len(df[df['signal'] == 'LONG']) / total * 100)) if total > 0 else 50
     short_pct = 100 - long_pct
     risk_val = max(10, min(100, round((1000 * 0.02) / 10) * 10))
@@ -153,12 +158,12 @@ def generate_dashboard():
     recent_count = len(df[pd.to_datetime(df['ts']) > (datetime.now() - timedelta(hours=4))])
     vol_status, vol_color = ("STABLE", "#3fb950") if recent_count < 30 else ("HIGH", "#f1e05a")
 
-    fig_hist = px.line(df.head(50), x="ts", y="confidence", color="asset", template="plotly_dark")
+    # Plots
+    fig_hist = px.line(df.head(50), x="ts", y="confidence", color="asset", template="plotly_dark", markers=True)
     fig_hist.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', showlegend=False, height=350, margin=dict(l=0,r=0,t=0,b=0))
     
-    asset_counts = df['asset'].value_counts().head(5).reset_index()
-    fig_conc = px.pie(asset_counts, values='count', names='asset', hole=.6, template="plotly_dark")
-    fig_conc.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', showlegend=False, height=350)
+    fig_conc = px.pie(asset_counts, values='count', names='asset', hole=.7, template="plotly_dark", color_discrete_sequence=px.colors.sequential.YlGnBu_r)
+    fig_conc.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', showlegend=False, height=350, margin=dict(l=20,r=20,t=20,b=20))
 
     cols = ['ts', 'asset', 'signal', 'Confidence', 'entry', 'tp', 'sl', 'Outcome', 'Duration']
     table_html = display_df[cols].to_html(escape=False, index=False, border=0).replace('class="dataframe"', '')
@@ -168,7 +173,7 @@ def generate_dashboard():
             update_time=datetime.now().strftime("%Y-%m-%d %H:%M UTC"),
             vol_status=vol_status, vol_color=vol_color, win_rate=win_rate,
             total_signals=total, long_pct=long_pct, short_pct=short_pct,
-            elite_signals=elite, risk_val=risk_val,
+            elite_signals=elite_count, risk_val=risk_val,
             history_plot=fig_hist.to_html(full_html=False, include_plotlyjs='cdn'),
             concentration_plot=fig_conc.to_html(full_html=False, include_plotlyjs='cdn'),
             table_html=table_html
