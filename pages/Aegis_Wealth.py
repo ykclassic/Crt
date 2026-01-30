@@ -1,24 +1,28 @@
-import streamlit as st
-import os
 import sys
+import subprocess
+import streamlit as st
+
+# --- CTO EMERGENCY AUTO-INSTALLER ---
+def install_requirements():
+    try:
+        import plotly
+        import pandas
+    except ImportError:
+        st.info("🛠️ First-time setup: Installing required intelligence libraries...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "plotly==5.18.0", "pandas==2.2.0"])
+        st.success("✅ Installation complete! Reloading...")
+        st.rerun()
+
+install_requirements()
+# ------------------------------------
+
+import os
 import json
 import sqlite3
 from datetime import datetime
-import subprocess
+import pandas as pd
+import plotly.express as px
 
-# CTO DIAGNOSTICS: Check installed packages
-st.sidebar.title("🛠️ CTO Diagnostics")
-if st.sidebar.button("Check Installed Packages"):
-    result = subprocess.check_output([sys.executable, "-m", "pip", "freeze"])
-    st.sidebar.text(result.decode())
-
-# --- CTO PATH BRIDGE ---
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-# --- SAFETY IMPORT CHECK ---
-try:
-    import pandas as pd
-    import plotly.express as px
 except ImportError:
     st.error("🔬 **Technical Requirement Missing:** Plotly or Pandas not found.")
     st.info("Please ensure `plotly` and `pandas` are in your `requirements.txt` file in the root folder.")
