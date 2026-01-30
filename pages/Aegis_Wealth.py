@@ -4,6 +4,13 @@ import sys
 import json
 import sqlite3
 from datetime import datetime
+import subprocess
+
+# CTO DIAGNOSTICS: Check installed packages
+st.sidebar.title("🛠️ CTO Diagnostics")
+if st.sidebar.button("Check Installed Packages"):
+    result = subprocess.check_output([sys.executable, "-m", "pip", "freeze"])
+    st.sidebar.text(result.decode())
 
 # --- CTO PATH BRIDGE ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
