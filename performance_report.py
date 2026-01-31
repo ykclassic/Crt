@@ -2,64 +2,82 @@ import sqlite3
 import pandas as pd
 import requests
 import os
+import plotly.express as px
 from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
 DB_FILE = "nexus.db"
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
+STARTING_BALANCE = 100.0  # Your theoretical $100
+RISK_PER_TRADE = 5.0      # Theoretical $5 risk per signal
+REWARD_RATIO = 1.5        # Assuming 1:1.5 Risk/Reward if not specified
 
 def generate_weekly_report():
     if not os.path.exists(DB_FILE): return
     
     conn = sqlite3.connect(DB_FILE)
-    # Fetch trades from the last 7 days
     one_week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
     df = pd.read_sql_query(f"SELECT * FROM signals WHERE ts >= '{one_week_ago}'", conn)
     conn.close()
 
     if df.empty:
-        return "No trades recorded this week."
+        print("No trades found for this week.")
+        return
 
-    # Calculation Logic
-    total_trades = len(df)
+    # --- BALANCE CALCULATION ---
+    current_balance = STARTING_BALANCE
+    balance_history = [STARTING_BALANCE]
+    
+    closed_trades = df[df['status'].isin(['SUCCESS', 'FAILED'])]
+    
+    for _, trade in closed_trades.iterrows():
+        if trade['status'] == 'SUCCESS':
+            current_balance += (RISK_PER_TRADE * REWARD_RATIO)
+        else:
+            current_balance -= RISK_PER_TRADE
+        balance_history.append(current_balance)
+
+    # --- EQUITY CURVE GENERATION ---
+    fig = px.line(x=list(range(len(balance_history))), y=balance_history, 
+                 title="Weekly Equity Curve", template="plotly_dark")
+    fig.update_layout(xaxis_title="Trades", yaxis_title="Balance ($)")
+    fig.write_image("equity_curve.png") # Requires 'kaleido' package
+
+    # --- PERFORMANCE METRICS ---
+    total_closed = len(closed_trades)
     wins = len(df[df['status'] == 'SUCCESS'])
-    losses = len(df[df['status'] == 'FAILED'])
-    active = len(df[df['status'].isin(['ACTIVE', 'SCANNING', None])])
-    
-    win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
-    
-    # AI Performance Grade Logic
-    grade = "C"
-    if win_rate >= 80: grade = "A+"
-    elif win_rate >= 70: grade = "A"
-    elif win_rate >= 60: grade = "B"
-    elif win_rate < 40: grade = "D"
+    win_rate = (wins / total_closed * 100) if total_closed > 0 else 0
+    profit_loss = current_balance - STARTING_BALANCE
+    status_emoji = "📈" if profit_loss >= 0 else "📉"
 
-    # Best Performing Node
-    best_node = df[df['status'] == 'SUCCESS']['exchange'].mode().iloc[0] if wins > 0 else "N/A"
-
-    # Discord Embed Payload
-    payload = {
-        "username": "Nexus Performance Auditor",
+    # --- DISCORD ALERT 1: METRICS ---
+    payload_metrics = {
+        "username": "Nexus Wealth Auditor",
         "embeds": [{
-            "title": "📊 AEGIS WEEKLY PERFORMANCE REPORT",
-            "description": f"Performance summary for the week ending {datetime.now().strftime('%Y-%m-%d')}",
+            "title": f"📊 WEEKLY PERFORMANCE AUDIT",
             "color": 0xbc8cff,
             "fields": [
-                {"name": "Neural Grade", "value": f"**{grade}**", "inline": True},
-                {"name": "Win Rate", "value": f"**{win_rate:.1f}%**", "inline": True},
-                {"name": "Top Node", "value": f"**{best_node.upper()}**", "inline": True},
-                {"name": "Total Signals", "value": str(total_trades), "inline": True},
-                {"name": "Wins/Losses", "value": f"✅ {wins} / ❌ {losses}", "inline": True},
-                {"name": "Currently Active", "value": str(active), "inline": True}
+                {"name": "Starting Fund", "value": f"${STARTING_BALANCE}", "inline": True},
+                {"name": "Closing Fund", "value": f"**${current_balance:.2f}**", "inline": True},
+                {"name": "Net P/L", "value": f"{status_emoji} ${profit_loss:.2f}", "inline": True},
+                {"name": "Win Rate", "value": f"{win_rate:.1f}%", "inline": True},
+                {"name": "Closed Trades", "value": str(total_closed), "inline": True}
             ],
-            "footer": {"text": "Aegis Wealth Management • Performance Verified"}
+            "footer": {"text": f"Audit Period: {one_week_ago} to Present"}
         }]
+    }
+
+    # --- DISCORD ALERT 2: BALANCE FINAL ---
+    payload_balance = {
+        "username": "Nexus Wealth Auditor",
+        "content": f"🚨 **FINAL WEEKLY BALANCE ALERT** 🚨\nYour theoretical fund currently stands at: **${current_balance:.2f}**"
     }
     
     if DISCORD_WEBHOOK_URL:
-        requests.post(DISCORD_WEBHOOK_URL, json=payload)
-    print(f"Weekly Report Sent. Win Rate: {win_rate}%")
+        requests.post(DISCORD_WEBHOOK_URL, json=payload_metrics)
+        requests.post(DISCORD_WEBHOOK_URL, json=payload_balance)
+        # Note: Sending the equity_curve.png would require a multipart/form-data request
+        print("Weekly Performance & Balance alerts sent.")
 
 if __name__ == "__main__":
     generate_weekly_report()
