@@ -3,42 +3,47 @@ import ccxt
 import pandas as pd
 import requests
 import os
+import subprocess
 from datetime import datetime
 
 # --- CONFIGURATION ---
 DB_FILE = "nexus.db"
-# Pulling from Environment Variable for Security
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK")
+TEST_START_BALANCE = 100.0  
+FIXED_RISK = 5.0            
 
 class ReconEngine:
     def __init__(self):
-        # Initializing exchange nodes for real-time price auditing
         self.nodes = {
             'gate': ccxt.gateio(),
             'bitget': ccxt.bitget(),
             'xt': ccxt.xt()
         }
 
+    def force_github_sync(self):
+        """Pushes the local database to GitHub to ensure dashboard matches the app."""
+        try:
+            subprocess.run(["git", "add", DB_FILE], check=True)
+            subprocess.run(["git", "commit", "-m", "🔄 Sync: Aligning Dashboard with App Alerts"], check=True)
+            subprocess.run(["git", "push"], check=True)
+            print("🚀 GitHub Sync Complete: Dashboard should now match App.")
+        except Exception as e:
+            print(f"⚠️ Sync Error (Likely no git configured locally): {e}")
+
     def send_discord_alert(self, trade_data, outcome, current_p):
-        """Sends the final Audit Result to Discord."""
         is_success = "SUCCESS" in outcome
         color = 0x3fb950 if is_success else 0xf85149
-        emoji = "💰" if is_success else "🛡️"
-        
         payload = {
             "username": "Nexus Recon Bot",
             "embeds": [{
-                "title": f"{emoji} POST-TRADE AUDIT: {outcome}",
+                "title": f"🛡️ POST-TRADE AUDIT: {outcome}",
                 "color": color,
                 "fields": [
-                    {"name": "Asset", "value": f"**{trade_data['asset']}**", "inline": True},
-                    {"name": "Exchange", "value": trade_data.get('exchange', 'GATE').upper(), "inline": True},
-                    {"name": "Entry Price", "value": f"{trade_data['entry']}", "inline": True},
-                    {"name": "Exit Price", "value": f"**{current_p}**", "inline": True},
-                    {"name": "Outcome", "value": "PROFIT" if is_success else "STOP LOSS", "inline": True},
-                    {"name": "AI Confidence", "value": f"{trade_data['confidence']}%", "inline": True}
+                    {"name": "Asset", "value": trade_data['asset'], "inline": True},
+                    {"name": "Outcome", "value": "PROFIT" if is_success else "LOSS", "inline": True},
+                    {"name": "Final Price", "value": str(current_p), "inline": True},
                 ],
-                "footer": {"text": f"Recon Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}"}
+                "footer": {"text": f"Audit Time: {datetime.now().strftime('%H:%M:%S UTC')}"}
             }]
         }
         if DISCORD_WEBHOOK_URL:
@@ -46,54 +51,42 @@ class ReconEngine:
 
     def run_recon_cycle(self):
         if not os.path.exists(DB_FILE): return
-        
         conn = sqlite3.connect(DB_FILE)
-        # We only audit trades that haven't reached a final outcome yet
+        # Prioritize trades the dashboard says are 'SCANNING'
         df = pd.read_sql_query("SELECT * FROM signals WHERE status IS NULL OR status = 'ACTIVE'", conn)
         
-        if df.empty:
-            print("No active signals require reconciliation.")
-            conn.close()
-            return
-
+        updated_any = False
         for _, trade in df.iterrows():
             exch = trade.get('exchange', 'gate').lower()
             node = self.nodes.get(exch, self.nodes['gate'])
-            
             try:
                 symbol = trade['asset'].replace("_", "/").upper()
                 ticker = node.fetch_ticker(symbol)
                 current_p = ticker['last']
                 
-                tp = float(trade['tp'])
-                sl = float(trade['sl'])
+                tp, sl = float(trade['tp']), float(trade['sl'])
                 is_long = trade['signal'].upper() == 'LONG'
                 
                 outcome = None
                 if is_long:
-                    if current_p >= tp: outcome = "SUCCESS (TARGET HIT)"
-                    elif current_p <= sl: outcome = "FAILED (STOP HIT)"
-                else: # Short logic
-                    if current_p <= tp: outcome = "SUCCESS (TARGET HIT)"
-                    elif current_p >= sl: outcome = "FAILED (STOP HIT)"
+                    if current_p >= tp: outcome = "SUCCESS"
+                    elif current_p <= sl: outcome = "FAILED"
+                else:
+                    if current_p <= tp: outcome = "SUCCESS"
+                    elif current_p >= sl: outcome = "FAILED"
 
                 if outcome:
-                    self.update_db_outcome(trade['id'], outcome)
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE signals SET status = ? WHERE id = ?", (outcome, trade['id']))
+                    conn.commit()
                     self.send_discord_alert(trade, outcome, current_p)
-                    print(f"Reconciled {symbol}: {outcome}")
-
+                    updated_any = True
             except Exception as e:
-                print(f"Error auditing {trade['asset']} on {exch}: {e}")
+                print(f"Audit Error: {e}")
         
         conn.close()
-
-    def update_db_outcome(self, trade_id, outcome):
-        status_label = 'SUCCESS' if 'SUCCESS' in outcome else 'FAILED'
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE signals SET status = ? WHERE id = ?", (status_label, trade_id))
-        conn.commit()
-        conn.close()
+        if updated_any:
+            self.force_github_sync()
 
 if __name__ == "__main__":
     recon = ReconEngine()
