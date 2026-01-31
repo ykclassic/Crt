@@ -2,8 +2,8 @@ name: Aegis Sunday Performance Audit
 
 on:
   schedule:
-    - cron: '59 23 * * 0' # Every Sunday at 11:59 PM
-  workflow_dispatch: # Allows you to run it manually anytime
+    - cron: '59 23 * * 0' # Every Sunday 23:59 UTC
+  workflow_dispatch:
 
 jobs:
   report:
@@ -18,9 +18,9 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: pip install pandas requests
+        run: pip install pandas requests plotly kaleido # Added kaleido for image generation
 
-      - name: 📊 Run Weekly Audit
+      - name: 📊 Run Weekly Audit & Balance Check
         run: python performance_report.py
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
