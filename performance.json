@@ -3,12 +3,12 @@
         "win_rate": 24.04,
         "total_trades": 495,
         "status": "RECOVERY",
-        "last_updated": "2026-02-02T09:38:23.371390"
+        "last_updated": "2026-02-02T10:36:52.038549"
     },
     "nexus_core": {
         "win_rate": 79.59,
         "total_trades": 49,
         "status": "LIVE",
-        "last_updated": "2026-02-02T09:38:29.767352"
+        "last_updated": "2026-02-02T10:37:01.611714"
     }
 }
