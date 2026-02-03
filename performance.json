@@ -1,14 +1,14 @@
 {
     "ai": {
-        "win_rate": 31.01,
-        "total_trades": 545,
+        "win_rate": 30.95,
+        "total_trades": 546,
         "status": "RECOVERY",
-        "last_updated": "2026-02-03T16:43:07.704270"
+        "last_updated": "2026-02-03T17:46:44.849918"
     },
     "nexus_core": {
         "win_rate": 79.59,
         "total_trades": 49,
         "status": "LIVE",
-        "last_updated": "2026-02-03T16:43:17.325235"
+        "last_updated": "2026-02-03T17:46:53.874518"
     }
 }
