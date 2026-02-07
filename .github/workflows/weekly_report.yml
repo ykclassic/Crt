@@ -8,6 +8,9 @@ on:
 jobs:
   report:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -18,9 +21,30 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: pip install pandas requests plotly kaleido # Added kaleido for image generation
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests plotly kaleido sqlite3
+
+      - name: 🛠️ Initialize Database Schema
+        # This prevents the "no such column: status" error by creating the column if missing
+        run: |
+          python -c "import sqlite3; conn=sqlite3.connect('nexus.db'); cursor=conn.cursor(); \
+          cursor.execute('CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY, ts TEXT, asset TEXT, signal TEXT, status TEXT)'); \
+          existing = [i[1] for i in cursor.execute('PRAGMA table_info(signals)')]; \
+          if 'status' not in existing: cursor.execute('ALTER TABLE signals ADD COLUMN status TEXT DEFAULT \"OPEN\"'); \
+          conn.commit(); conn.close()"
 
       - name: 📊 Run Weekly Audit & Balance Check
         run: python performance_report.py
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+
+      - name: 💾 Persist Weekly Report
+        run: |
+          git config --local user.email "cto-bot@nexus-ai.com"
+          git config --local user.name "Nexus CTO Bot"
+          if [ -f "weekly_performance_report.csv" ]; then
+            git add weekly_performance_report.csv
+            git commit -m "Archive: Weekly Performance Report [skip ci]" || echo "Nothing to archive"
+            git push origin main
+          fi
