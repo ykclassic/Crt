@@ -27,12 +27,26 @@ jobs:
           pip install "pandas<2.1.0" "numpy<2.0.0" requests plotly kaleido
 
       - name: 🛠️ Initialize Database Schema
+        # Using a multi-line block to avoid 'if' statement syntax errors
         run: |
-          python -c "import sqlite3; conn=sqlite3.connect('nexus.db'); cursor=conn.cursor(); \
-          cursor.execute('CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY, ts TEXT, asset TEXT, signal TEXT, status TEXT)'); \
-          existing = [i[1] for i in cursor.execute('PRAGMA table_info(signals)')]; \
-          if 'status' not in existing: cursor.execute('ALTER TABLE signals ADD COLUMN status TEXT DEFAULT \"OPEN\"'); \
-          conn.commit(); conn.close()"
+          python -c "
+          import sqlite3
+          import os
+          db_exists = os.path.exists('nexus.db')
+          conn = sqlite3.connect('nexus.db')
+          cursor = conn.cursor()
+          # Create table if it doesn't exist
+          cursor.execute('''CREATE TABLE IF NOT EXISTS signals 
+                           (id INTEGER PRIMARY KEY, ts TEXT, asset TEXT, signal TEXT, status TEXT)''')
+          # Check for status column
+          cursor.execute('PRAGMA table_info(signals)')
+          existing = [i[1] for i in cursor.fetchall()]
+          if 'status' not in existing:
+              cursor.execute('ALTER TABLE signals ADD COLUMN status TEXT DEFAULT \"OPEN\"')
+          conn.commit()
+          conn.close()
+          print('✅ Database schema verified.')
+          "
 
       - name: 📊 Run Weekly Audit & Balance Check
         run: python performance_report.py
