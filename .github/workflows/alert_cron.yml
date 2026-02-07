@@ -1,66 +1,59 @@
-name: Nexus AI Full Suite Orchestration
+name: Nexus AI Alert Cron
 
 on:
   schedule:
-    - cron: '0 * * * *'   # Hourly Cycle
-    - cron: '30 23 * * *' # Daily Maintenance
-  workflow_dispatch:      # Manual Trigger
+    - cron: '*/15 * * * *'  # Every 15 minutes
+  workflow_dispatch:
+
+# Permissions moved to top-level to ensure the GITHUB_TOKEN has correct scopes
+permissions:
+  contents: write
+  actions: write
+  # Note: 'workflows' permission is sensitive. 
+  # In some enterprise/restricted repos, use 'contents: write' alone 
+  # and avoid adding workflow files to 'git add'.
+  id-token: write
 
 jobs:
-  nexus_operations:
+  run-alerts:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write     # Required for pushing DB/File updates
-      id-token: write     # Required for OIDC/security integrity
-      actions: write      # Required for managing runs
-      workflows: write    # THIS FIXES THE "REMOTE REJECTED" ERROR
-      
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1 
+          fetch-depth: 1
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install System Dependencies
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt || pip install pandas numpy scikit-learn streamlit plotly
+          pip install pandas sqlite3
 
-      - name: Database Schema Migration
+      - name: Run Alert Engine
+        run: python run_alerts.py
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+      - name: Persist State
         run: |
-          python -c "import sqlite3; conn=sqlite3.connect('nexus.db'); cursor=conn.cursor(); \
-          cols={'rsi':'REAL','vol_change':'REAL','dist_ema':'REAL','result':'INTEGER','engine':'TEXT','confidence':'REAL','reason':'TEXT'}; \
-          [cursor.execute(f'ALTER TABLE signals ADD COLUMN {k} {v}') for k,v in cols.items() if k not in [i[1] for i in cursor.execute('PRAGMA table_info(signals)')]]; \
-          conn.commit(); conn.close()"
-
-      - name: Run Maintenance
-        if: github.event.schedule == '30 23 * * *' || github.event_name == 'workflow_dispatch'
-        run: python maintenance.py
-        env:
-          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-
-      - name: Run Market Guardian
-        run: python market_guardian.py
-        env:
-          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-
-      - name: Run AI Engine (High-Quality Mode)
-        run: python ai_engine.py
-        env:
-          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-
-      - name: Run Consensus & Dispatcher
-        run: |
-          python run_consensus.py
-          python nexus_dispatcher.py
-        env:
-          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-
+          git config --local user.email "cto-bot@nexus-ai.com"
+          git config --local user.name "Nexus CTO Bot"
+          
+          # SAFETY: Only add the database/logs. 
+          # This avoids the need for 'workflows' write permission 
+          # because we aren't touching .github/workflows/ files.
+          git add nexus.db || echo "No changes to nexus.db"
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Alert Cycle: State Sync [skip ci]"
+            git push origin main
+          fi
       - name: Run Auditor
         run: python audit_intelligence.py
 
