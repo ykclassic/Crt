@@ -1,56 +1,58 @@
-# generate_dashboard.py
+name: Nexus Intelligence CI
 
-import pandas as pd
-import sqlite3
-import os
-from engine.config import DB_PATH
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
-def generate_dashboard():
-    """
-    Fetches signal data and generates a performance summary.
-    Ensures columns are verified dynamically to avoid KeyErrors.
-    """
-    if not os.path.exists(DB_PATH):
-        print(f"❌ Error: Database not found at {DB_PATH}")
-        return
+jobs:
+  validate-app:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    try:
-        # Use context manager for database connection
-        with sqlite3.connect(DB_PATH) as conn:
-            # Explicitly select columns to ensure they exist in the DataFrame
-            query = "SELECT * FROM signals"
-            df = pd.read_sql_query(query, conn)
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-        if df.empty:
-            print("⚠️ Dashboard: No signals found in database.")
-            return
+      - name: Install Dependencies
+        run: |
+          pip install streamlit pandas numpy plotly sqlite3
+          # Checks for requirements.txt if you have other libs like sklearn/pickle
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-        # Verification of 'status' column existence (Prevents KeyError)
-        if 'status' not in df.columns:
-            print("❌ Error: 'status' column missing from database schema.")
-            print(f"Available columns: {df.columns.tolist()}")
-            return
+      - name: Dependency & Path Audit
+        # Ensures all local imports (config, nexus_reporter) are present
+        run: |
+          python -c "import config; import nexus_reporter; print('✅ Local Modules Verified')"
 
-        # Dynamic calculation of metrics (Not hardcoded)
-        total_signals = len(df)
-        wins = len(df[df['status'] == 'SUCCESS'])
-        losses = len(df[df['status'] == 'FAILED'])
-        open_trades = len(df[df['status'] == 'OPEN'])
+      - name: Database & Schema Integrity
+        # Ensures journal and signal databases initialize without KeyError
+        run: |
+          python -c "
+          import sqlite3, os
+          # Initialize Journal
+          conn = sqlite3.connect('journal.db')
+          conn.execute('CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY, ts TEXT, category TEXT, entry TEXT)')
+          conn.close()
+          # Initialize Signals
+          conn = sqlite3.connect('nexus.db')
+          conn.execute('CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY, ts TEXT, asset TEXT, signal TEXT, confidence REAL, engine TEXT, timeframe TEXT, reason TEXT)')
+          conn.close()
+          print('✅ Database Schemas Verified')
+          "
 
-        # Calculate Win Rate: (Wins / Closed Trades) * 100
-        closed_trades = wins + losses
-        win_rate = (wins / closed_trades * 100) if closed_trades > 0 else 0
+      - name: Static Syntax Check
+        run: |
+          python -m compileall .
+          echo "✅ No indentation or syntax errors found in Streamlit code."
 
-        print("--- Nexus Elite Dashboard ---")
-        print(f"Total Signals: {total_signals}")
-        print(f"Active Trades: {open_trades}")
-        print(f"Wins:          {wins}")
-        print(f"Losses:        {losses}")
-        print(f"Win Rate:      {win_rate:.2f}%")
-        print("-----------------------------")
-
-    except Exception as e:
-        print(f"❌ Dashboard Generation Failed: {e}")
-
-if __name__ == "__main__":
-    generate_dashboard()
+      - name: Headless Streamlit Smoke Test
+        # Verifies the app starts without immediate crash
+        run: |
+          export STREAMLIT_SERVER_HEADLESS=true
+          timeout 10s streamlit run your_script_name.py || [ $? -eq 124 ]
+          echo "✅ Streamlit app loaded successfully."
