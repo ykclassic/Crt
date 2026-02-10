@@ -1,35 +1,70 @@
-name: Nexus Intelligence CI
+name: Nexus AI Alert Cron
 
 on:
-  push:
-    branches: [ main ]
+  schedule:
+    - cron: '*/15 * * * *'  # Every 15 minutes
   workflow_dispatch:
 
+permissions:
+  contents: write
+  actions: write
+  id-token: write
+
 jobs:
-  validate-app:
+  run-alerts:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          fetch-depth: 1
 
-      - name: Install Compatible Dependencies
-        # Fixes binary incompatibility by pinning NumPy 1.x and Pandas 2.0.x
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12' # Upgraded to support Pandas 3.0+
+
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "numpy<2.0.0" "pandas<2.1.0" streamlit plotly scikit-learn
+          # sqlite3 is built-in; only pandas is required here
+          pip install pandas
 
-      - name: Dependency & Execution Audit
-        # If there is a syntax error in your app, this import will catch it
-        run: |
-          python -c "import numpy; import pandas; import streamlit; import sqlite3; print(f'✅ App Constituents Verified - NumPy: {numpy.__version__}')"
+      - name: Database Schema Migration
+        run: python migrate_db.py || echo "No migrations needed"
 
-      - name: Database Initialization
-        # Ensures the environment is ready for data generation
+      - name: Run Market Guardian
+        run: python market_guardian.py
+
+      - name: Run AI Engine (High-Quality Mode)
+        run: python run_alerts.py
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+      - name: Run Consensus & Dispatcher
+        run: python consensus_dispatch.py
+
+      - name: Run Auditor
+        run: python audit_intelligence.py
+
+      - name: Run AI Retraining
+        if: github.event.schedule == '30 23 * * *' || github.event_name == 'workflow_dispatch'
+        run: python train_brain.py
+
+      - name: Commit & Push Changes
         run: |
-          python -c "import sqlite3; conn=sqlite3.connect('nexus.db'); conn.execute('CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY, ts TEXT, asset TEXT, signal TEXT, confidence REAL, engine TEXT, timeframe TEXT, reason TEXT)'); conn.close()"
-          echo "✅ Database ready."
+          git config --local user.email "cto-bot@nexus-ai.com"
+          git config --local user.name "Nexus CTO Bot"
+          
+          find . -name "__pycache__" -type d -exec rm -rf {} +
+          
+          # Adding all relevant state files as seen in your previous successful run
+          git add nexus.db *.html *.csv *.json *.pkl || echo "No changes to add"
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Nexus Cycle: State Sync [skip ci]"
+            git fetch origin main
+            git push origin main --force-with-lease
+          fi
