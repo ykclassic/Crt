@@ -2,7 +2,7 @@ name: Nexus AI Alert Cron
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # Every 15 minutes
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -22,13 +22,13 @@ jobs:
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12' # Upgraded to support Pandas 3.0+
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # sqlite3 is built-in; only pandas is required here
-          pip install pandas
+          # sqlite3 is built-in; installing pandas and ccxt
+          pip install pandas ccxt
 
       - name: Database Schema Migration
         run: python migrate_db.py || echo "No migrations needed"
@@ -36,7 +36,7 @@ jobs:
       - name: Run Market Guardian
         run: python market_guardian.py
 
-      - name: Run AI Engine (High-Quality Mode)
+      - name: Run Alert Engine
         run: python run_alerts.py
         env:
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -55,12 +55,8 @@ jobs:
         run: |
           git config --local user.email "cto-bot@nexus-ai.com"
           git config --local user.name "Nexus CTO Bot"
-          
           find . -name "__pycache__" -type d -exec rm -rf {} +
-          
-          # Adding all relevant state files as seen in your previous successful run
           git add nexus.db *.html *.csv *.json *.pkl || echo "No changes to add"
-          
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
