@@ -5,13 +5,9 @@ on:
     - cron: '*/15 * * * *'  # Every 15 minutes
   workflow_dispatch:
 
-# Permissions moved to top-level to ensure the GITHUB_TOKEN has correct scopes
 permissions:
   contents: write
   actions: write
-  # Note: 'workflows' permission is sensitive. 
-  # In some enterprise/restricted repos, use 'contents: write' alone 
-  # and avoid adding workflow files to 'git add'.
   id-token: write
 
 jobs:
@@ -23,37 +19,22 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Set up Python 3.10
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas sqlite3
+          # sqlite3 is built-in; only pandas needs to be installed via pip
+          pip install pandas
 
       - name: Run Alert Engine
         run: python run_alerts.py
         env:
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
-      - name: Persist State
-        run: |
-          git config --local user.email "cto-bot@nexus-ai.com"
-          git config --local user.name "Nexus CTO Bot"
-          
-          # SAFETY: Only add the database/logs. 
-          # This avoids the need for 'workflows' write permission 
-          # because we aren't touching .github/workflows/ files.
-          git add nexus.db || echo "No changes to nexus.db"
-          
-          if git diff --staged --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "Alert Cycle: State Sync [skip ci]"
-            git push origin main
-          fi
       - name: Run Auditor
         run: python audit_intelligence.py
 
@@ -61,23 +42,22 @@ jobs:
         if: github.event.schedule == '30 23 * * *' || github.event_name == 'workflow_dispatch'
         run: python train_brain.py
 
-      # --- PERSISTENCE: REFINED MODE ---
       - name: Commit & Push Changes
         run: |
           git config --local user.email "cto-bot@nexus-ai.com"
           git config --local user.name "Nexus CTO Bot"
           
-          # Clean up temporary files before adding
+          # Clean up temporary files
           find . -name "__pycache__" -type d -exec rm -rf {} +
           
-          # Specifically add constituents to prevent accidental workflow lockouts
-          git add nexus.db *.html *.csv *.json *.pkl || git add .
+          # Add database and data files
+          git add nexus.db *.html *.csv *.json *.pkl || echo "No files to add"
           
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "Nexus Cycle: DB Update [skip ci]"
+            git commit -m "Nexus Cycle: DB & State Update [skip ci]"
             git fetch origin main
-            # Force push is allowed now because 'workflows: write' permission is active
-            git push origin main --force
+            # Using --force-with-lease is safer than --force to prevent overwriting concurrent work
+            git push origin main --force-with-lease
           fi
