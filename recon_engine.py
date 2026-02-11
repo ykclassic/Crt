@@ -1,25 +1,24 @@
 import ccxt
 import sqlite3
-from datetime import datetime
 from config import DB_FILE
+from db_manager import initialize_database
 
 ex = ccxt.gateio({'enableRateLimit': True})
 
 def run_recon():
+    initialize_database()
+
     conn = sqlite3.connect(DB_FILE)
-    df = conn.execute("""
-        SELECT * FROM signals
-        WHERE status = 'ACTIVE'
-    """).fetchall()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
 
-    columns = [desc[0] for desc in conn.execute("PRAGMA table_info(signals)")]
+    cursor.execute("SELECT * FROM signals WHERE status = 'ACTIVE'")
+    trades = cursor.fetchall()
 
-    for row in df:
-        trade = dict(zip(columns, row))
+    for trade in trades:
         try:
             ticker = ex.fetch_ticker(trade["asset"])
             price = ticker["last"]
-
             outcome = None
 
             if trade["signal"] == "LONG":
@@ -34,11 +33,10 @@ def run_recon():
                     outcome = "FAILED"
 
             if outcome:
-                conn.execute("""
-                    UPDATE signals
-                    SET status = ?
-                    WHERE id = ?
-                """, (outcome, trade["id"]))
+                cursor.execute(
+                    "UPDATE signals SET status = ? WHERE id = ?",
+                    (outcome, trade["id"])
+                )
                 conn.commit()
 
         except Exception:
