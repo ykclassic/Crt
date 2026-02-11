@@ -1,86 +1,145 @@
 import ccxt
+import sqlite3
 import pandas as pd
 import numpy as np
-import sqlite3
-import pickle
-import os
-import logging
 from datetime import datetime
-from config import (
-    DB_FILE, MODEL_FILE, ASSETS, ENGINES, 
-    MIN_ENSEMBLE_CONFIDENCE, TOTAL_CAPITAL, RISK_PER_TRADE
-)
+from config import DB_FILE, TIMEFRAMES, ATR_MULTIPLIER_SL, ATR_MULTIPLIER_TP
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+# -----------------------------
+# Exchange (NO XT)
+# -----------------------------
+ex = ccxt.gateio({'enableRateLimit': True})
 
-def get_ensemble_prediction(rsi, vol_change, dist_ema):
-    if not os.path.exists(MODEL_FILE):
-        return None
-    try:
-        with open(MODEL_FILE, "rb") as f:
-            pipeline = pickle.load(f)
-        feat_df = pd.DataFrame([[rsi, vol_change, dist_ema]], columns=['rsi', 'vol_change', 'dist_ema'])
-        probs = pipeline.predict_proba(feat_df)
-        return round(probs[0][1] * 100, 2)
-    except Exception as e:
-        # SELF-HEALING: If the brain is incompatible, remove it so the next run can retrain
-        logging.error(f"Brain Incompatibility Detected: {e}. Purging legacy brain.")
-        try:
-            os.remove(MODEL_FILE)
-        except:
-            pass
-        return None
-
-def run_ai_engine():
-    logging.info("--- STARTING NEXUS AI ENGINE (SELF-HEALING MODE) ---")
-    
-    try:
-        ex = ccxt.gateio({'enableRateLimit': True})
-    except:
-        ex = ccxt.xt()
-
+# -----------------------------
+# Ensure DB Schema
+# -----------------------------
+def init_db():
     conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    for asset in ASSETS:
-        try:
-            ohlcv = ex.fetch_ohlcv(asset, '1h', limit=50)
-            df = pd.DataFrame(ohlcv, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-            
-            # --- Technical Logic ---
-            price = df['c'].iloc[-1]
-            delta = df['c'].diff()
-            rsi = (100 - (100 / (1 + delta.clip(lower=0).rolling(14).mean() / -delta.clip(upper=0).rolling(14).mean()))).iloc[-1]
-            vol_change = df['v'].pct_change().iloc[-1]
-            dist_ema = (price - df['c'].ewm(span=20).mean().iloc[-1]) / price
-
-            # Data Cleaning
-            rsi = 50.0 if np.isnan(rsi) else rsi
-            vol_change = 0.0 if np.isnan(vol_change) else vol_change
-
-            conf = get_ensemble_prediction(rsi, vol_change, dist_ema)
-            
-            # --- FALLBACK: Alert even if AI is dead ---
-            if conf is None:
-                logging.info(f"Using Technical Fallback for {asset}")
-                if rsi < 35: conf = 75.0  # Simple oversold logic
-                elif rsi > 65: conf = 25.0 # Simple overbought logic
-                else: conf = 50.0
-
-            if conf >= MIN_ENSEMBLE_CONFIDENCE or conf <= (100 - MIN_ENSEMBLE_CONFIDENCE):
-                signal = "LONG" if conf > 50 else "SHORT"
-                # Save Signal
-                cursor.execute("""
-                    INSERT INTO signals (engine, asset, timeframe, signal, entry, sl, tp, confidence, rsi, vol_change, dist_ema, ts)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, ('ai', asset, '1h', signal, price, price*0.98, price*1.04, conf, rsi, vol_change, dist_ema, datetime.now().isoformat()))
-                logging.info(f"✅ ALERT GENERATED: {asset} {signal} ({conf}%)")
-
-        except Exception as e:
-            logging.error(f"Asset Error {asset}: {e}")
-
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            engine TEXT,
+            asset TEXT,
+            timeframe TEXT,
+            signal TEXT,
+            entry REAL,
+            sl REAL,
+            tp REAL,
+            confidence REAL,
+            rsi REAL,
+            vol_change REAL,
+            dist_ema REAL,
+            reason TEXT,
+            status TEXT,
+            ts TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
+# -----------------------------
+# Indicators
+# -----------------------------
+def calculate_indicators(df):
+    df["ema20"] = df["close"].ewm(span=20).mean()
+    df["ema50"] = df["close"].ewm(span=50).mean()
+    df["rsi"] = compute_rsi(df["close"], 14)
+    df["atr"] = compute_atr(df, 14)
+    df["vol_change"] = df["volume"].pct_change()
+    df["dist_ema"] = (df["close"] - df["ema20"]) / df["ema20"]
+    return df
+
+def compute_rsi(series, period):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def compute_atr(df, period):
+    high_low = df["high"] - df["low"]
+    high_close = np.abs(df["high"] - df["close"].shift())
+    low_close = np.abs(df["low"] - df["close"].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(period).mean()
+
+# -----------------------------
+# Signal Logic
+# -----------------------------
+def generate_signal(df):
+    latest = df.iloc[-1]
+
+    if latest["ema20"] > latest["ema50"] and latest["rsi"] < 70:
+        return "LONG"
+    if latest["ema20"] < latest["ema50"] and latest["rsi"] > 30:
+        return "SHORT"
+    return None
+
+# -----------------------------
+# Store Signal
+# -----------------------------
+def save_signal(asset, timeframe, signal, df):
+    latest = df.iloc[-1]
+    entry = latest["close"]
+    atr = latest["atr"]
+
+    sl = entry - ATR_MULTIPLIER_SL * atr if signal == "LONG" else entry + ATR_MULTIPLIER_SL * atr
+    tp = entry + ATR_MULTIPLIER_TP * atr if signal == "LONG" else entry - ATR_MULTIPLIER_TP * atr
+
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("""
+        INSERT INTO signals (
+            engine, asset, timeframe, signal,
+            entry, sl, tp, confidence,
+            rsi, vol_change, dist_ema,
+            reason, status, ts
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        "AI_ENGINE",
+        asset,
+        timeframe,
+        signal,
+        float(entry),
+        float(sl),
+        float(tp),
+        0.75,
+        float(latest["rsi"]),
+        float(latest["vol_change"]),
+        float(latest["dist_ema"]),
+        "EMA+RSI strategy",
+        "ACTIVE",
+        datetime.utcnow().isoformat()
+    ))
+    conn.commit()
+    conn.close()
+
+# -----------------------------
+# Main Run
+# -----------------------------
+def run():
+    init_db()
+    markets = ex.load_markets()
+
+    for symbol in list(markets.keys())[:10]:
+        if not symbol.endswith("/USDT"):
+            continue
+
+        for tf in TIMEFRAMES:
+            try:
+                ohlcv = ex.fetch_ohlcv(symbol, tf, limit=200)
+                df = pd.DataFrame(ohlcv, columns=[
+                    "timestamp", "open", "high", "low", "close", "volume"
+                ])
+                df = calculate_indicators(df)
+                signal = generate_signal(df)
+
+                if signal:
+                    save_signal(symbol, tf, signal, df)
+
+            except Exception:
+                continue
+
 if __name__ == "__main__":
-    run_ai_engine()
+    run()
