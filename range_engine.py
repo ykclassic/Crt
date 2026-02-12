@@ -6,20 +6,31 @@ import json
 import os
 import requests
 from datetime import datetime
-from config import DB_FILE, WEBHOOK_URL, ENGINES, ASSETS, PERFORMANCE_FILE
+from config import DB_FILE, WEBHOOK_URL, ENGINES, PERFORMANCE_FILE
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
 STRATEGY_ID = "rangemaster"
 APP_NAME = ENGINES.get(STRATEGY_ID, "Nexus Rangemaster")
 
+SYMBOLS = [
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT",
+    "BNB/USDT",
+    "XRP/USDT",
+    "ADA/USDT"
+]
+
 def is_engine_enabled():
-    if not os.path.exists(PERFORMANCE_FILE): return True
+    if not os.path.exists(PERFORMANCE_FILE):
+        return True
     try:
         with open(PERFORMANCE_FILE, "r") as f:
             perf = json.load(f)
             return perf.get(STRATEGY_ID, {}).get("status", "LIVE") == "LIVE"
-    except: return True
+    except:
+        return True
 
 def notify(msg):
     if WEBHOOK_URL:
@@ -29,47 +40,70 @@ def notify(msg):
             logging.error(f"Discord notify failed: {e}")
 
 def run_range_engine():
+
     if not is_engine_enabled():
-        logging.warning(f"{APP_NAME} is in RECOVERY mode. Skipping.")
+        logging.warning(f"{APP_NAME} in RECOVERY mode. Skipping.")
         return
 
-    # Bitget is excellent for 15m scalping/range data
-    ex = ccxt.bitget({"enableRateLimit": True})
+    ex = ccxt.gateio({"enableRateLimit": True})
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
-    for asset in ASSETS:
+    for asset in SYMBOLS:
         try:
-            data = ex.fetch_ohlcv(asset, '15m', limit=50)
-            df = pd.DataFrame(data, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-            
-            # Bollinger Bands Calculation
-            df['sma'] = df['c'].rolling(20).mean()
-            df['std'] = df['c'].rolling(20).std()
-            df['upper'] = df['sma'] + (2 * df['std'])
-            df['lower'] = df['sma'] - (2 * df['std'])
-            
+            ohlcv = ex.fetch_ohlcv(asset, "15m", limit=80)
+            if len(ohlcv) < 30:
+                continue
+
+            df = pd.DataFrame(ohlcv, columns=["ts", "o", "h", "l", "c", "v"])
+
+            df["sma"] = df["c"].rolling(20).mean()
+            df["std"] = df["c"].rolling(20).std()
+            df["upper"] = df["sma"] + (2 * df["std"])
+            df["lower"] = df["sma"] - (2 * df["std"])
+
             last = df.iloc[-1]
-            signal = "NEUTRAL"
-            
-            if last['c'] <= last['lower']:
+
+            signal = None
+            reason = ""
+
+            if last["c"] <= last["lower"]:
                 signal = "LONG"
                 reason = "Bollinger Lower Band Touch"
-            elif last['c'] >= last['upper']:
+
+            elif last["c"] >= last["upper"]:
                 signal = "SHORT"
                 reason = "Bollinger Upper Band Touch"
 
-            if signal != "NEUTRAL":
-                price = last['c']
-                sl = last['lower'] * 0.995 if signal == "LONG" else last['upper'] * 1.005
-                tp = last['sma'] # Mean Reversion Target
+            if signal:
+                price = float(last["c"])
+                sl = float(last["lower"] * 0.995) if signal == "LONG" else float(last["upper"] * 1.005)
+                tp = float(last["sma"])
 
                 cursor.execute("""
-                    INSERT INTO signals (engine, asset, timeframe, signal, entry, sl, tp, confidence, reason, ts)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (STRATEGY_ID, asset, '15m', signal, price, sl, tp, 60.0, reason, datetime.now().isoformat()))
+                    INSERT INTO signals (
+                        engine, asset, timeframe, signal,
+                        entry, sl, tp, confidence,
+                        reason, status, ts
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    STRATEGY_ID,
+                    asset,
+                    "15m",
+                    signal,
+                    price,
+                    sl,
+                    tp,
+                    0.60,
+                    reason,
+                    "ACTIVE",
+                    datetime.utcnow().isoformat()
+                ))
+
                 conn.commit()
-                notify(f"↔️ **Range Signal**: {signal} {asset} at `{price}`")
+                logging.info(f"{asset} {signal} range signal")
+                notify(f"↔️ {signal} {asset} | {reason}")
 
         except Exception as e:
             logging.error(f"Range Engine Error ({asset}): {e}")
