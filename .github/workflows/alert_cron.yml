@@ -10,9 +10,10 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      contents: write   # Required to push changes
+      contents: write
 
     steps:
+
       # ==========================================
       # 1️⃣ Checkout Repository
       # ==========================================
@@ -38,14 +39,24 @@ jobs:
           pip install -r requirements.txt
 
       # ==========================================
-      # 4️⃣ Run Engines
+      # 4️⃣ Run Engines (Correct Execution Order)
       # ==========================================
+
+      # Recon: checks ACTIVE signals against market
       - name: Run Recon Engine
         run: python recon_engine.py
 
+      # Consensus: generates new signals
       - name: Run Consensus Engine
         run: python run_consensus.py
 
+      # Alerts: sends webhook notifications for TP/SL hits
+      - name: Run Alerts Engine
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: python run_alerts.py
+
+      # Auditor: performance metrics & cleanup
       - name: Run Intelligence Auditor
         run: python audit_intelligence.py
 
