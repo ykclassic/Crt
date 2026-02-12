@@ -3,12 +3,12 @@
         "win_rate": 60.0,
         "total_trades": 30,
         "status": "LIVE",
-        "last_updated": "2026-02-12T18:50:30.724430"
+        "last_updated": "2026-02-12T20:12:24.301827"
     },
     "AI_ENGINE": {
         "win_rate": 18.18,
         "total_trades": 11,
         "status": "RECOVERY",
-        "last_updated": "2026-02-12T18:50:36.843420"
+        "last_updated": "2026-02-12T20:12:28.217171"
     }
 }
