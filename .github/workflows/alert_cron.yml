@@ -8,24 +8,28 @@ on:
 jobs:
   nexus:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
+
       # 1️⃣ Checkout Repository
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Required for rebase
 
-      # 2️⃣ Set up Python 3.10
+      # 2️⃣ Setup Python
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+          cache: "pip"
 
-      # 3️⃣ Install System Dependencies
-      - name: Install System Dependencies
+      # 3️⃣ Install Dependencies (Upgraded)
+      - name: Install Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-pip
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
+          pip install --upgrade ccxt
           pip install -r requirements.txt
 
       # 4️⃣ Database Schema Migration
@@ -33,50 +37,63 @@ jobs:
         run: |
           python sanity_check.py
 
-      # 5️⃣ Run Maintenance
+      # 5️⃣ Maintenance
       - name: Run Maintenance
         run: |
           python maintenance.py
 
-      # 6️⃣ Run Market Guardian
+      # 6️⃣ Market Guardian
       - name: Run Market Guardian
         run: |
           python market_guardian.py
 
-      # 7️⃣ Run AI Engine (High-Quality Mode)
-      - name: Run AI Engine (High-Quality Mode)
-        run: |
-          python ai_engine.py
-          python hybrid_engine.py
-          python range_engine.py
-          python nexus_core.py
+      # 7️⃣ Core Engines
+      - name: Run AI Engine
+        run: python ai_engine.py
 
-      # 8️⃣ Run Consensus & Dispatcher
-      - name: Run Consensus & Dispatcher
-        run: |
-          python run_consensus.py
-          python nexus_dispatcher.py
+      - name: Run Hybrid Engine
+        run: python hybrid_engine.py
 
-      # 9️⃣ Run Auditor
+      - name: Run Range Engine
+        run: python range_engine.py
+
+      - name: Run Nexus Core
+        run: python nexus_core.py
+
+      # 8️⃣ Consensus & Dispatcher
+      - name: Run Consensus
+        run: python run_consensus.py
+
+      - name: Run Dispatcher
+        run: python nexus_dispatcher.py
+
+      # 9️⃣ Auditor & Reconciliation
       - name: Run Auditor
-        run: |
-          python audit_intelligence.py
-          python recon_engine.py
+        run: python audit_intelligence.py
 
-      # 🔟 Run AI Retraining
-      - name: Run AI Retraining
-        run: |
-          python train_brain.py
+      - name: Run Recon Engine
+        run: python recon_engine.py
 
-      # 1️⃣1️⃣ Commit & Push Changes
+      # 🔟 AI Retraining
+      - name: Retrain AI Brain
+        run: python train_brain.py
+
+      # 1️⃣1️⃣ Commit & Push (Safe Rebase)
       - name: Commit & Push Changes
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git add .
-          git commit -m "🔄 Nexus Auto Update" || echo "No changes to commit"
-          git push
 
-      # 1️⃣2️⃣ Complete Job
+          # Pull latest changes safely
+          git pull origin main --rebase
+
+          git add .
+
+          git commit -m "🔄 Nexus Auto Update - $(date -u +"%Y-%m-%d %H:%M:%S")" \
+          || echo "No changes to commit"
+
+          git push origin main
+
+      # 1️⃣2️⃣ Completion
       - name: Complete Job
         run: echo "Nexus operation cycle complete."
