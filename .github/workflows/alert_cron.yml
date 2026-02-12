@@ -1,4 +1,4 @@
-name: nexus_operations
+name: Nexus Intelligence Pipeline
 
 on:
   schedule:
@@ -6,94 +6,64 @@ on:
   workflow_dispatch:
 
 jobs:
-  nexus:
+  run-intelligence:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+
+    permissions:
+      contents: write   # Required to push changes
 
     steps:
-
+      # ==========================================
       # 1️⃣ Checkout Repository
+      # ==========================================
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # Required for rebase
+          fetch-depth: 0
 
+      # ==========================================
       # 2️⃣ Setup Python
-      - name: Set up Python 3.10
+      # ==========================================
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
-          cache: "pip"
+          python-version: "3.11"
 
-      # 3️⃣ Install Dependencies (Upgraded)
+      # ==========================================
+      # 3️⃣ Install Dependencies
+      # ==========================================
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade ccxt
           pip install -r requirements.txt
 
-      # 4️⃣ Database Schema Migration
-      - name: Database Schema Migration
-        run: |
-          python sanity_check.py
-
-      # 5️⃣ Maintenance
-      - name: Run Maintenance
-        run: |
-          python maintenance.py
-
-      # 6️⃣ Market Guardian
-      - name: Run Market Guardian
-        run: |
-          python market_guardian.py
-
-      # 7️⃣ Core Engines
-      - name: Run AI Engine
-        run: python ai_engine.py
-
-      - name: Run Hybrid Engine
-        run: python hybrid_engine.py
-
-      - name: Run Range Engine
-        run: python range_engine.py
-
-      - name: Run Nexus Core
-        run: python nexus_core.py
-
-      # 8️⃣ Consensus & Dispatcher
-      - name: Run Consensus
-        run: python run_consensus.py
-
-      - name: Run Dispatcher
-        run: python nexus_dispatcher.py
-
-      # 9️⃣ Auditor & Reconciliation
-      - name: Run Auditor
-        run: python audit_intelligence.py
-
+      # ==========================================
+      # 4️⃣ Run Engines
+      # ==========================================
       - name: Run Recon Engine
         run: python recon_engine.py
 
-      # 🔟 AI Retraining
-      - name: Retrain AI Brain
-        run: python train_brain.py
+      - name: Run Consensus Engine
+        run: python run_consensus.py
 
-      # 1️⃣1️⃣ Commit & Push (Safe Rebase)
-      - name: Commit & Push Changes
+      - name: Run Intelligence Auditor
+        run: python audit_intelligence.py
+
+      # ==========================================
+      # 5️⃣ Commit & Push (SAFE VERSION)
+      # ==========================================
+      - name: Commit and Push Changes
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
 
-          # Pull latest changes safely
-          git pull origin main --rebase
+          # Add only intended files
+          git add performance.json
 
-          git add .
-
-          git commit -m "🔄 Nexus Auto Update - $(date -u +"%Y-%m-%d %H:%M:%S")" \
-          || echo "No changes to commit"
-
-          git push origin main
-
-      # 1️⃣2️⃣ Completion
-      - name: Complete Job
-        run: echo "Nexus operation cycle complete."
+          # Prevent empty commit
+          if git diff --cached --quiet; then
+            echo "No changes detected."
+          else
+            git commit -m "Auto-update performance metrics"
+            git push
+          fi
