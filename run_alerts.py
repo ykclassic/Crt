@@ -1,6 +1,7 @@
 import ccxt
 import sqlite3
-from config import DB_FILE
+import requests
+from config import DB_FILE, WEBHOOK_URL
 from db_manager import initialize_database
 
 exchanges = [
@@ -8,12 +9,38 @@ exchanges = [
     ccxt.bitget({'enableRateLimit': True})
 ]
 
-def update_status(conn, trade_id, status):
+def send_alert(message):
+    if not WEBHOOK_URL:
+        print("WEBHOOK_URL not set. Skipping alert.")
+        return
+
+    try:
+        requests.post(
+            WEBHOOK_URL,
+            json={"content": message},
+            timeout=10
+        )
+    except Exception as e:
+        print("Webhook error:", e)
+
+def update_status(conn, trade, new_status):
     conn.execute(
         "UPDATE signals SET status = ? WHERE id = ?",
-        (status, trade_id)
+        (new_status, trade["id"])
     )
     conn.commit()
+
+    message = (
+        f"📊 **Nexus Alert**\n"
+        f"Asset: {trade['asset']}\n"
+        f"Signal: {trade['signal']}\n"
+        f"Entry: {trade['entry']}\n"
+        f"TP: {trade['tp']}\n"
+        f"SL: {trade['sl']}\n"
+        f"Result: {new_status}"
+    )
+
+    send_alert(message)
 
 def check_alerts():
     initialize_database()
@@ -31,16 +58,21 @@ def check_alerts():
                 ticker = ex.fetch_ticker(trade["asset"])
                 price = ticker["last"]
 
+                outcome = None
+
                 if trade["signal"] == "LONG":
                     if price >= trade["tp"]:
-                        update_status(conn, trade["id"], "SUCCESS")
+                        outcome = "SUCCESS"
                     elif price <= trade["sl"]:
-                        update_status(conn, trade["id"], "FAILED")
+                        outcome = "FAILED"
                 else:
                     if price <= trade["tp"]:
-                        update_status(conn, trade["id"], "SUCCESS")
+                        outcome = "SUCCESS"
                     elif price >= trade["sl"]:
-                        update_status(conn, trade["id"], "FAILED")
+                        outcome = "FAILED"
+
+                if outcome:
+                    update_status(conn, trade, outcome)
 
                 break
 
