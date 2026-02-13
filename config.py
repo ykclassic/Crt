@@ -4,7 +4,7 @@ import os
 # DATABASE & FILES
 # ============================================================
 
-DB_FILE = os.getenv("DB_FILE", "nexus.db")
+DB_FILE = "nexus.db"
 HISTORY_DB = os.getenv("HISTORY_DB", "nexus_history.db")
 MODEL_FILE = os.getenv("MODEL_FILE", "nexus_brain.pkl")
 BACKUP_DIR = os.getenv("BACKUP_DIR", "backups/")
@@ -14,7 +14,7 @@ PERFORMANCE_FILE = os.getenv("PERFORMANCE_FILE", "performance.json")
 # API & NOTIFICATIONS
 # ============================================================
 
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 # ============================================================
 # ASSET SETTINGS
