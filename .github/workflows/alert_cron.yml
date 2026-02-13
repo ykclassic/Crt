@@ -2,87 +2,128 @@ name: Nexus Intelligence Pipeline
 
 on:
   schedule:
-    - cron: "0 * * * *"   # Hourly
+    - cron: "0 * * * *"   # Runs every hour
   workflow_dispatch:
 
+# Prevent overlapping runs
 concurrency:
   group: nexus-main
   cancel-in-progress: true
 
 jobs:
-  setup_python:
+  nexus_operations:
     runs-on: ubuntu-latest
-    outputs:
-      python-cache-hit: ${{ steps.cache-pip.outputs.cache-hit }}
+
+    permissions:
+      contents: write
+
     steps:
-      - name: Checkout Repo
+      # ==========================================
+      # 1️⃣ Checkout Repository
+      # ==========================================
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # Required for safe pushing
 
-      - name: Set up Python 3.12
+      # ==========================================
+      # 2️⃣ Setup Python 3.12 and install dependencies
+      # ==========================================
+      - name: Setup Python & Install Dependencies
         uses: actions/setup-python@v5
         with:
-          python-version: 3.12
-          cache: 'pip'
-
-      - name: Cache pip packages
-        id: cache-pip
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: nexus-pip-${{ runner.os }}-3.12
-          restore-keys: |
-            nexus-pip-${{ runner.os }}-3.12
-
+          python-version: "3.12"
+          cache: "pip"
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas ccxt requests transformers torch
+          pip install --no-cache-dir pandas ccxt requests transformers torch
 
-  nexus_operations:
-    needs: setup_python
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
-      TRANSFORMERS_CACHE: ./.cache
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run Database Migration
+      # ==========================================
+      # 3️⃣ Database Migration
+      # ==========================================
+      - name: Database Schema Migration
         run: |
-          if [ -f migrate_db.py ]; then python migrate_db.py; fi
+          if [ -f migrate_db.py ]; then
+            python migrate_db.py
+          else
+            echo "No migration file found."
+          fi
 
+      # ==========================================
+      # 4️⃣ Market Guardian
+      # ==========================================
       - name: Run Market Guardian
         run: |
-          if [ -f market_guardian.py ]; then python market_guardian.py; fi
+          if [ -f market_guardian.py ]; then
+            python market_guardian.py
+          else
+            echo "market_guardian.py not found."
+          fi
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
+      # ==========================================
+      # 5️⃣ AI Engine (Signal Alerts)
+      # ==========================================
       - name: Run AI Engine
         run: |
-          if [ -f run_alerts.py ]; then python run_alerts.py; fi
+          if [ -f run_alerts.py ]; then
+            python run_alerts.py
+          else
+            echo "run_alerts.py not found."
+          fi
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          TRANSFORMERS_CACHE: ./.cache
 
-      - name: Run Multi-Timeframe Consensus
+      # ==========================================
+      # 6️⃣ Multi-Timeframe Consensus
+      # ==========================================
+      - name: Run Consensus
         run: |
-          if [ -f run_consensus.py ]; then python run_consensus.py; fi
+          if [ -f run_consensus.py ]; then
+            python run_consensus.py
+          else
+            echo "run_consensus.py not found."
+          fi
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
+      # ==========================================
+      # 7️⃣ Recon Engine (Close/Update Trades)
+      # ==========================================
       - name: Run Recon Engine
         run: |
-          if [ -f recon_engine.py ]; then python recon_engine.py; fi
+          if [ -f recon_engine.py ]; then
+            python recon_engine.py
+          else
+            echo "recon_engine.py not found."
+          fi
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
-      - name: Run Performance Auditor
+      # ==========================================
+      # 8️⃣ Performance Auditor
+      # ==========================================
+      - name: Run Auditor
         run: |
-          if [ -f audit_intelligence.py ]; then python audit_intelligence.py; fi
+          if [ -f audit_intelligence.py ]; then
+            python audit_intelligence.py
+          else
+            echo "audit_intelligence.py not found."
+          fi
 
+      # ==========================================
+      # 9️⃣ Commit & Push Changes
+      # ==========================================
       - name: Commit & Push Changes
         run: |
           git config --local user.name "Nexus CTO Bot"
           git config --local user.email "cto-bot@nexus-ai.com"
+
           git add performance.json nexus.db *.csv *.json || true
+
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
