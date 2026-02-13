@@ -63,6 +63,14 @@ jobs:
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
+      - name: Cache Transformers Models
+        uses: actions/cache@v4
+        with:
+          path: ./.cache
+          key: ${{ runner.os }}-transformers-${{ hashFiles('**/run_alerts.py') }}
+          restore-keys: |
+            ${{ runner.os }}-transformers-
+
       # ==========================================
       # 5️⃣ AI Engine (Signal Alerts)
       # ==========================================
