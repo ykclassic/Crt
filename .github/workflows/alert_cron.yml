@@ -5,6 +5,11 @@ on:
     - cron: "0 * * * *"   # Runs every hour
   workflow_dispatch:
 
+# Prevent overlapping runs pushing at same time
+concurrency:
+  group: nexus-main
+  cancel-in-progress: true
+
 jobs:
   nexus_operations:
     runs-on: ubuntu-latest
@@ -19,87 +24,104 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0   # Required for safe pushing
 
       # ==========================================
-      # 2️⃣ Setup Python (Upgraded to 3.12)
+      # 2️⃣ Setup Python 3.12
       # ==========================================
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: 'pip'
+          cache: "pip"
 
       # ==========================================
-      # 3️⃣ Install System Dependencies
+      # 3️⃣ Install Dependencies
       # ==========================================
-      - name: Install System Dependencies
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # Explicitly installing core libraries to avoid ModuleNotFoundErrors
-          # sqlite3 is omitted as it is built-in
           pip install pandas ccxt requests transformers torch
 
       # ==========================================
-      # 4️⃣ Database Schema Migration
+      # 4️⃣ Database Migration (Safe)
       # ==========================================
       - name: Database Schema Migration
-        run: python migrate_db.py || echo "No migrations needed"
+        run: |
+          if [ -f migrate_db.py ]; then
+            python migrate_db.py
+          else
+            echo "No migration file found."
+          fi
 
       # ==========================================
-      # 5️⃣ Run Maintenance (Optional/Skipped)
-      # ==========================================
-      - name: Run Maintenance
-        run: echo "Maintenance check"
-        # If you have a maintenance.py, uncomment the next line:
-        # run: python maintenance.py 
-        if: false # Matches the 'skipped' status in your image
-
-      # ==========================================
-      # 6️⃣ Run Market Guardian
+      # 5️⃣ Market Guardian
       # ==========================================
       - name: Run Market Guardian
-        run: python market_guardian.py
+        run: |
+          if [ -f market_guardian.py ]; then
+            python market_guardian.py
+          else
+            echo "market_guardian.py not found."
+          fi
 
       # ==========================================
-      # 7️⃣ Run AI Engine (High-Quality Mode)
+      # 6️⃣ AI Signal Engine
       # ==========================================
-      - name: Run AI Engine (High-Quality Mode)
-        run: python run_alerts.py
+      - name: Run AI Engine
+        run: |
+          if [ -f run_alerts.py ]; then
+            python run_alerts.py
+          else
+            echo "run_alerts.py not found."
+          fi
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
           TRANSFORMERS_CACHE: ./.cache
 
       # ==========================================
-      # 8️⃣ Run Consensus & Dispatcher
+      # 7️⃣ Multi-Timeframe Consensus
       # ==========================================
-      - name: Run Consensus & Dispatcher
-        run: python consensus_dispatch.py
+      - name: Run Consensus
+        run: |
+          if [ -f run_consensus.py ]; then
+            python run_consensus.py
+          else
+            echo "run_consensus.py not found."
+          fi
 
       # ==========================================
-      # 9️⃣ Run Auditor
+      # 8️⃣ Recon Engine (Close Trades)
+      # ==========================================
+      - name: Run Recon Engine
+        run: |
+          if [ -f recon_engine.py ]; then
+            python recon_engine.py
+          else
+            echo "recon_engine.py not found."
+          fi
+
+      # ==========================================
+      # 9️⃣ Performance Auditor
       # ==========================================
       - name: Run Auditor
-        run: python audit_intelligence.py
+        run: |
+          if [ -f audit_intelligence.py ]; then
+            python audit_intelligence.py
+          else
+            echo "audit_intelligence.py not found."
+          fi
 
       # ==========================================
-      # 🔟 Run AI Retraining (Optional/Skipped)
-      # ==========================================
-      - name: Run AI Retraining
-        run: echo "Retraining check"
-        # Only run this on a specific schedule if needed
-        if: github.event.schedule == '0 0 * * *' 
-
-      # ==========================================
-      # 1️⃣1️⃣ Commit & Push Changes
+      # 🔟 Commit & Push Changes (Hardened)
       # ==========================================
       - name: Commit & Push Changes
         run: |
           git config --local user.name "Nexus CTO Bot"
           git config --local user.email "cto-bot@nexus-ai.com"
 
-          # Add database, metrics, and state files
-          git add nexus.db performance.json *.csv *.json || echo "No files to add"
+          # Add only state files (avoid accidental commits)
+          git add performance.json nexus.db *.csv *.json || true
 
           if git diff --staged --quiet; then
             echo "No changes to commit."
