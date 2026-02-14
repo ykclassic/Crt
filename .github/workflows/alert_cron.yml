@@ -1,45 +1,78 @@
-name: Nexus Engine
+name: Nexus Intelligence Pipeline
 
+# Runs every hour and also allows manual trigger
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 * * * *"   # Every hour
   workflow_dispatch:
 
 jobs:
-  run:
+  run-intelligence:
     runs-on: ubuntu-latest
 
-    steps:
-      - uses: actions/checkout@v3
+    permissions:
+      contents: write
 
+    steps:
+      # =========================
+      # 1️⃣ Checkout Repository
+      # =========================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # =========================
+      # 2️⃣ Setup Python
+      # =========================
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: "3.13"
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip
-
-      - name: Install dependencies
+      # =========================
+      # 3️⃣ Install Dependencies
+      # =========================
+      - name: Install Dependencies
         run: |
-          pip install ccxt pandas requests
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Run Core Engine
-        run: python nexus_core.py
+      # =========================
+      # 4️⃣ Run Engines
+      # =========================
+      - name: Run Trend Engine
+        run: |
+          echo "🚀 Running Nexus Core (Trending Engine)"
+          python engine/nexus_core.py
 
       - name: Run Range Engine
-        run: python range_engine.py
+        run: |
+          echo "🚀 Running Range Engine"
+          python engine/range_engine.py
 
       - name: Run Hybrid Engine
-        run: python hybrid_engine.py
+        run: |
+          echo "🚀 Running Hybrid Engine"
+          python engine/hybrid_engine.py
 
+      - name: Run AI Engine
+        run: |
+          echo "🚀 Running AI Engine"
+          python engine/ai_engine.py
+
+      # =========================
+      # 5️⃣ Run Consensus
+      # =========================
       - name: Run Consensus
-        run: python run_consensus.py
+        run: |
+          echo "🧠 Running Consensus Engine with 4 engines"
+          python engine/run_consensus.py
 
+      # =========================
+      # 6️⃣ Dispatch Signals
+      # =========================
       - name: Dispatch Alerts
-        env:
-          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
-        run: python nexus_dispatcher.py
+        run: |
+          echo "📣 Sending Alerts via Dispatcher"
+          python engine/nexus_dispatcher.py
