@@ -1,155 +1,217 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-from datetime import datetime
+import json
+import os
+from datetime import datetime, timezone
 from collections import Counter
 
-# ===============================
+# ====================================
 # CONFIGURATION
-# ===============================
+# ====================================
 
-TREND_DB = "trending_signals.db"
-RANGE_DB = "ranging_signals.db"
-HYBRID_DB = "hybrid_signals.db"
+DB_FILE = "nexus_signals.db"
+PERFORMANCE_FILE = "performance.json"
 
 st.set_page_config(
-    page_title="Nexus Trading System",
+    page_title="Nexus Intelligence Dashboard",
     layout="wide"
 )
 
-# ===============================
-# DATABASE UTIL
-# ===============================
+# ====================================
+# DATABASE HELPERS
+# ====================================
 
-def fetch_latest_signals(db_path):
-    conn = sqlite3.connect(db_path)
+def fetch_latest_signals():
+    conn = sqlite3.connect(DB_FILE)
+
     query = """
-        SELECT pair, direction, entry, stop_loss, take_profit, timestamp
+        SELECT *
         FROM signals
-        WHERE timestamp = (
-            SELECT MAX(timestamp) FROM signals
-        )
+        WHERE ts >= datetime('now', '-24 hours')
+        ORDER BY ts DESC
     """
+
     df = pd.read_sql_query(query, conn)
     conn.close()
     return df
 
 
-# ===============================
-# CONSENSUS LOGIC
-# ===============================
+def fetch_active_signals():
+    conn = sqlite3.connect(DB_FILE)
 
-def classify_consensus(signals):
-    directions = [s["direction"] for s in signals if s is not None]
-    direction_count = Counter(directions)
+    query = """
+        SELECT *
+        FROM signals
+        WHERE status = 'ACTIVE'
+        ORDER BY ts DESC
+    """
 
-    if len(direction_count) == 1 and len(directions) == 3:
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df
+
+
+def load_performance():
+    if not os.path.exists(PERFORMANCE_FILE):
+        return {}
+    with open(PERFORMANCE_FILE, "r") as f:
+        return json.load(f)
+
+# ====================================
+# CONSENSUS CLASSIFIER (4 Engines)
+# ====================================
+
+def classify_consensus(directions):
+    counts = Counter(directions)
+
+    if len(counts) == 1 and len(directions) == 4:
         return "DIAMOND 💎"
-    elif any(count == 2 for count in direction_count.values()):
+    elif any(v >= 3 for v in counts.values()):
+        return "PLATINUM 🏆"
+    elif any(v == 2 for v in counts.values()):
         return "GOLD 🥇"
     else:
-        return "STANDARD ⚪"
+        return "SPLIT ⚪"
 
+# ====================================
+# UI HEADER
+# ====================================
 
-# ===============================
-# LOAD DATA
-# ===============================
-
-try:
-    trending_df = fetch_latest_signals(TREND_DB)
-    ranging_df = fetch_latest_signals(RANGE_DB)
-    hybrid_df = fetch_latest_signals(HYBRID_DB)
-except Exception as e:
-    st.error(f"Database error: {e}")
-    st.stop()
-
-# ===============================
-# HEADER
-# ===============================
-
-st.title("NEXUS Trading System Dashboard")
+st.title("NEXUS Intelligence System")
+st.markdown("### Autonomous Multi-Engine Trading Network")
 st.markdown("---")
 
-# ===============================
-# ARCHITECTURE VISUAL
-# ===============================
+# ====================================
+# SYSTEM ARCHITECTURE VISUAL
+# ====================================
 
-st.subheader("System Workflow")
+st.subheader("System Architecture")
 
 st.graphviz_chart("""
 digraph {
     rankdir=LR;
 
-    config -> trending;
-    config -> ranging;
-    config -> hybrid;
+    Core -> DB;
+    Range -> DB;
+    Hybrid -> DB;
+    AI -> DB;
 
-    trending -> trending_db;
-    ranging -> ranging_db;
-    hybrid -> hybrid_db;
+    DB -> Consensus;
+    Consensus -> Dispatcher;
+    Dispatcher -> User;
 
-    trending_db -> consensus;
-    ranging_db -> consensus;
-    hybrid_db -> consensus;
-
-    consensus -> dispatcher;
+    DB -> Monitor;
+    Monitor -> Audit;
 }
 """)
 
 st.markdown("---")
 
-# ===============================
-# SIGNAL DISPLAY
-# ===============================
+# ====================================
+# LOAD DATA
+# ====================================
 
-st.subheader("Engine Signals")
+try:
+    df_all = fetch_latest_signals()
+    df_active = fetch_active_signals()
+    performance = load_performance()
+except Exception as e:
+    st.error(f"Data load error: {e}")
+    st.stop()
 
-pairs = sorted(
-    set(trending_df["pair"])
-    | set(ranging_df["pair"])
-    | set(hybrid_df["pair"])
-)
+# ====================================
+# NETWORK STATUS PANEL
+# ====================================
 
-for pair in pairs:
-    st.markdown(f"### {pair}")
+col1, col2, col3 = st.columns(3)
 
-    t_signal = trending_df[trending_df["pair"] == pair]
-    r_signal = ranging_df[ranging_df["pair"] == pair]
-    h_signal = hybrid_df[hybrid_df["pair"] == pair]
+with col1:
+    st.metric("Active Signals", len(df_active))
 
-    col1, col2, col3 = st.columns(3)
+with col2:
+    total_last_24h = len(df_all)
+    st.metric("Signals (24H)", total_last_24h)
 
-    def display_signal(column, title, df):
-        with column:
-            st.markdown(f"**{title}**")
-            if not df.empty:
-                row = df.iloc[0]
-                st.write(f"Direction: {row['direction']}")
-                st.write(f"Entry: {row['entry']}")
-                st.write(f"Stop Loss: {row['stop_loss']}")
-                st.write(f"Take Profit: {row['take_profit']}")
-            else:
-                st.write("No Signal")
+with col3:
+    engines_online = df_all["engine"].nunique()
+    st.metric("Active Engines", engines_online)
 
-    display_signal(col1, "Trending Engine", t_signal)
-    display_signal(col2, "Ranging Engine", r_signal)
-    display_signal(col3, "Hybrid Engine", h_signal)
+st.markdown("---")
 
-    signals = []
-    if not t_signal.empty:
-        signals.append(t_signal.iloc[0])
-    if not r_signal.empty:
-        signals.append(r_signal.iloc[0])
-    if not h_signal.empty:
-        signals.append(h_signal.iloc[0])
+# ====================================
+# SIGNAL VIEW BY ASSET
+# ====================================
 
-    consensus = classify_consensus(signals)
+st.subheader("Live Signal Board")
 
-    st.markdown(f"### Consensus Result: {consensus}")
-    st.markdown("---")
+if df_active.empty:
+    st.info("No active signals.")
+else:
+    assets = df_active["asset"].unique()
 
-# ===============================
+    for asset in assets:
+        st.markdown(f"## {asset}")
+
+        asset_df = df_active[df_active["asset"] == asset]
+
+        cols = st.columns(4)
+
+        directions = []
+
+        for idx, engine in enumerate(["NEXUS_CORE", "RANGE", "HYBRID", "AI"]):
+            with cols[idx]:
+                st.markdown(f"**{engine}**")
+
+                engine_df = asset_df[asset_df["engine"] == engine]
+
+                if not engine_df.empty:
+                    row = engine_df.iloc[0]
+                    directions.append(row["signal"])
+
+                    st.write(f"Direction: {row['signal']}")
+                    st.write(f"Entry: {round(row['entry'], 4)}")
+                    st.write(f"SL: {round(row['sl'], 4)}")
+                    st.write(f"TP: {round(row['tp'], 4)}")
+                    st.write(f"Confidence: {round(row.get('confidence', 0), 2)}")
+                else:
+                    st.write("No Signal")
+
+        if directions:
+            consensus = classify_consensus(directions)
+            st.markdown(f"### Consensus: {consensus}")
+
+        st.markdown("---")
+
+# ====================================
+# ENGINE PERFORMANCE PANEL
+# ====================================
+
+st.subheader("Engine Governance Status")
+
+if not performance:
+    st.info("No performance data available.")
+else:
+    perf_df = pd.DataFrame(performance).T
+    st.dataframe(perf_df)
+
+# ====================================
+# RESOLUTION SUMMARY
+# ====================================
+
+st.subheader("Resolved Trades (Last 24H)")
+
+resolved = df_all[df_all["status"].isin(["TP", "SL"])]
+
+if resolved.empty:
+    st.write("No resolved trades.")
+else:
+    summary = resolved.groupby("status").size()
+    st.bar_chart(summary)
+
+# ====================================
 # FOOTER
-# ===============================
+# ====================================
 
-st.caption(f"Last updated: {datetime.utcnow()} UTC")
+st.markdown("---")
+st.caption(f"Last Updated: {datetime.now(timezone.utc).isoformat()} UTC")
