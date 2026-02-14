@@ -7,38 +7,30 @@ import os
 from datetime import datetime, timezone
 from config import DB_FILE
 
+# ===============================
+# Environment / Config
+# ===============================
+
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+SINGLE_RUN = os.getenv("SINGLE_RUN", "false").lower() == "true"
+
+POLL_INTERVAL = 300
+MAX_SIGNALS_PER_CYCLE = 50
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, DB_FILE)
+
+# ===============================
+# Logging
+# ===============================
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | ALERT_MONITOR | %(levelname)s | %(message)s"
 )
-def ensure_schema(conn):
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pair TEXT NOT NULL,
-            direction TEXT NOT NULL,
-            entry REAL,
-            stop_loss REAL,
-            take_profit REAL,
-            status TEXT DEFAULT 'ACTIVE',
-            timestamp TEXT
-        )
-    """)
-    conn.commit()
 
 # ===============================
-# Configuration
-# ===============================
-
-POLL_INTERVAL = 300          # seconds (5 minutes)
-MAX_SIGNALS_PER_CYCLE = 50   # CI safety cap
-SINGLE_RUN = os.getenv("SINGLE_RUN", "false").lower() == "true"
-
-# ===============================
-# Exchange Setup
+# Exchange
 # ===============================
 
 exchange = ccxt.gateio({
@@ -47,40 +39,79 @@ exchange = ccxt.gateio({
 })
 
 # ===============================
+# Database Schema
+# ===============================
+
+def ensure_schema(conn):
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            entry REAL,
+            sl REAL,
+            tp REAL,
+            signal TEXT NOT NULL,
+            status TEXT DEFAULT 'ACTIVE',
+            ts TEXT,
+            closed_at TEXT
+        )
+    """)
+    conn.commit()
+
+# ===============================
 # Database Helpers
 # ===============================
 
+def get_connection():
+    conn = sqlite3.connect(DB_PATH)
+    ensure_schema(conn)
+    return conn
+
+
 def fetch_active_signals():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
+    if not os.path.exists(DB_PATH):
+        logging.warning("Database file missing. No signals to monitor.")
+        return []
 
-    cursor.execute("""
-        SELECT id, asset, timeframe, entry, sl, tp, signal
-        FROM signals
-        WHERE status = 'ACTIVE'
-        ORDER BY ts DESC
-        LIMIT ?
-    """, (MAX_SIGNALS_PER_CYCLE,))
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
 
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
+        cursor.execute("""
+            SELECT id, asset, timeframe, entry, sl, tp, signal
+            FROM signals
+            WHERE status = 'ACTIVE'
+            ORDER BY ts DESC
+            LIMIT ?
+        """, (MAX_SIGNALS_PER_CYCLE,))
+
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    except Exception as e:
+        logging.error(f"Failed to fetch signals: {e}")
+        return []
 
 
 def update_signal_status(signal_id, status):
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("""
-        UPDATE signals
-        SET status = ?, closed_at = ?
-        WHERE id = ?
-    """, (
-        status,
-        datetime.now(timezone.utc).isoformat(),
-        signal_id
-    ))
-    conn.commit()
-    conn.close()
-
+    try:
+        conn = get_connection()
+        conn.execute("""
+            UPDATE signals
+            SET status = ?, closed_at = ?
+            WHERE id = ?
+        """, (
+            status,
+            datetime.now(timezone.utc).isoformat(),
+            signal_id
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"Failed to update signal {signal_id}: {e}")
 
 # ===============================
 # Market Check Logic
@@ -89,89 +120,84 @@ def update_signal_status(signal_id, status):
 def check_market_hit(asset, timeframe, sl, tp, signal_type):
     try:
         ohlcv = exchange.fetch_ohlcv(asset, timeframe, limit=50)
-
-        for candle in ohlcv:
-            high, low = candle[2], candle[3]
-
-            if signal_type == "LONG":
-                if high >= tp:
-                    return "TP"
-                if low <= sl:
-                    return "SL"
-
-            if signal_type == "SHORT":
-                if low <= tp:
-                    return "TP"
-                if high >= sl:
-                    return "SL"
-
-        return None
-
     except Exception as e:
-        logging.error(f"Market check failed for {asset}: {e}")
+        logging.error(f"Market fetch failed for {asset}: {e}")
         return None
 
+    for candle in ohlcv:
+        high = candle[2]
+        low = candle[3]
+
+        if signal_type.upper() == "LONG":
+            if low <= sl:
+                return "STOP_LOSS"
+            if high >= tp:
+                return "TAKE_PROFIT"
+
+        elif signal_type.upper() == "SHORT":
+            if high >= sl:
+                return "STOP_LOSS"
+            if low <= tp:
+                return "TAKE_PROFIT"
+
+    return None
 
 # ===============================
-# Alert Sender
+# Notifications
 # ===============================
 
-def send_alert(signal_id, asset, direction, result, price):
+def send_webhook(message):
     if not WEBHOOK_URL:
-        logging.error("WEBHOOK_URL not configured")
+        logging.warning("No webhook configured.")
         return
 
-    message = (
-        f"🎯 SIGNAL RESOLVED\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"ID: {signal_id}\n"
-        f"Asset: {asset}\n"
-        f"Direction: {direction}\n"
-        f"Outcome: {result}\n"
-        f"Price Hit: {round(price, 4)}\n"
-        f"Time: {datetime.now(timezone.utc).isoformat()}"
-    )
-
     try:
-        response = requests.post(
+        requests.post(
             WEBHOOK_URL,
-            json={"content": message},
+            json={"text": message},
             timeout=10
         )
-
-        if response.status_code not in [200, 204]:
-            logging.error(f"Webhook error: {response.status_code} {response.text}")
-        else:
-            logging.info(f"{asset} {result} alert sent")
-
     except Exception as e:
-        logging.error(f"Dispatch failed: {e}")
-
+        logging.error(f"Webhook failed: {e}")
 
 # ===============================
-# Monitor Loop
+# Monitor Cycle
 # ===============================
 
 def monitor_cycle():
     signals = fetch_active_signals()
 
     if not signals:
-        logging.info("No active signals")
+        logging.info("No active signals.")
         return
 
-    for signal in signals:
-        signal_id, asset, timeframe, entry, sl, tp, direction = signal
+    logging.info(f"Monitoring {len(signals)} active signals.")
 
-        result = check_market_hit(asset, timeframe, sl, tp, direction)
+    for signal in signals:
+        signal_id, asset, timeframe, entry, sl, tp, signal_type = signal
+
+        result = check_market_hit(asset, timeframe, sl, tp, signal_type)
 
         if result:
-            hit_price = tp if result == "TP" else sl
-            send_alert(signal_id, asset, direction, result, hit_price)
+            logging.info(f"{asset} {timeframe} hit {result}")
+
             update_signal_status(signal_id, result)
 
+            message = (
+                f"📊 {asset} ({timeframe})\n"
+                f"Signal: {signal_type}\n"
+                f"Result: {result}\n"
+                f"Time: {datetime.now(timezone.utc).isoformat()}"
+            )
+
+            send_webhook(message)
+
+# ===============================
+# Main Loop
+# ===============================
 
 def run_monitor():
-    logging.info("Starting continuous alert monitor")
+    logging.info("Starting alert monitor")
 
     while True:
         monitor_cycle()
@@ -180,7 +206,6 @@ def run_monitor():
             logging.info("Single run mode enabled. Exiting.")
             break
 
-        logging.info(f"Sleeping {POLL_INTERVAL} seconds...")
         time.sleep(POLL_INTERVAL)
 
 
