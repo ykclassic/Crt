@@ -100,11 +100,11 @@ def save_signal(asset, timeframe, signal, df):
         return
 
     if signal == "LONG":
-        sl = entry - ATR_MULTIPLIER_SL * atr
-        tp = entry + ATR_MULTIPLIER_TP * atr
+        sl = entry_price * (1 - RISK_PERCENT)
+        tp = entry_price * (1 + REWARD_PERCENT)
     else:
-        sl = entry + ATR_MULTIPLIER_SL * atr
-        tp = entry - ATR_MULTIPLIER_TP * atr
+        sl = entry_price * (1 + RISK_PERCENT)
+        tp = entry_price * (1 - REWARD_PERCENT)
 
     conn = sqlite3.connect(DB_FILE)
     conn.execute("""
