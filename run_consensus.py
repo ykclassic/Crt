@@ -1,6 +1,7 @@
 import sqlite3
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
+datetime.now(timezone.utc).isoformat()
 import logging
 
 from nexus_dispatcher import dispatch_signal
