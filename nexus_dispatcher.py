@@ -1,6 +1,7 @@
 import requests
 import logging
-from config import WEBHOOK_URL
+import os
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 logging.basicConfig(
     level=logging.INFO,
