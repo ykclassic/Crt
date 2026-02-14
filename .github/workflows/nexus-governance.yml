@@ -1,0 +1,66 @@
+name: Nexus Governance Control
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # Every 30 minutes
+  workflow_dispatch:
+
+jobs:
+  run-governance:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    env:
+      PYTHONUNBUFFERED: 1
+      WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+      SINGLE_RUN: "true"
+
+    steps:
+      # 1️⃣ Checkout repository
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # 2️⃣ Setup Python (with pip cache)
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # 3️⃣ Install Dependencies
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary -r requirements.txt
+
+      # 4️⃣ Run Alert Monitor
+      - name: Run Alert Monitor
+        run: |
+          echo "🛡 Running Alert Monitor at $(date)"
+          python alert_monitor.py
+
+      # 5️⃣ Run Performance Audit
+      - name: Run Performance Audit
+        run: |
+          echo "📊 Running Performance Audit"
+          python audit_intelligence.py
+
+      # 6️⃣ Commit updated performance + DB (if changed)
+      - name: Commit Governance Updates
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          git add performance.json || true
+          git add nexus_signals.db || true
+
+          if git diff --cached --quiet; then
+            echo "No governance updates to commit."
+          else
+            git commit -m "Governance update [auto]"
+            git push
+          fi
