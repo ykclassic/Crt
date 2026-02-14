@@ -10,6 +10,8 @@ on:
 jobs:
   run-monitor:
     runs-on: ubuntu-latest
+    # Only run if the previous workflow actually succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
 
     env:
       PYTHONUNBUFFERED: 1
@@ -27,14 +29,24 @@ jobs:
       - name: Download Signals Database
         uses: actions/download-artifact@v4
         with:
-          name: nexus_signals.db
+          name: nexus_signals_db
+          # Since this is a separate workflow, we target the run that triggered this one
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
 
       # 3️⃣ Confirm DB Presence
       - name: Verify Database
         run: |
-          if [ ! -f nexus_signals.db ]; then
+          # The artifact download creates a directory if multiple files exist, 
+          # but for a single file, we check the current path or the folder.
+          if [ ! -f nexus_signals.db ] && [ ! -f nexus_signals_db/nexus_signals.db ]; then
             echo "❌ Database not found after artifact download."
+            ls -R # List files to help debug if it moved
             exit 1
+          fi
+          # Move file if it was downloaded into a subfolder
+          if [ -f nexus_signals_db/nexus_signals.db ]; then
+            mv nexus_signals_db/nexus_signals.db .
           fi
           echo "✅ Database loaded."
 
