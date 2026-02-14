@@ -6,95 +6,50 @@ on:
   workflow_dispatch:
 
 jobs:
-  setup-python:
+  run-intelligence:
     runs-on: ubuntu-latest
-    outputs:
-      python-path: ${{ steps.python-path.outputs.python-path }}
+
+    permissions:
+      contents: write
+
     steps:
+
+      # 1️⃣ Checkout Repository
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
+      # 2️⃣ Setup Python 3.12
       - name: Setup Python
-        id: python-path
         uses: actions/setup-python@v4
         with:
-          python-version: "3.13"
+          python-version: "3.12"
+          cache: "pip"
 
-      - name: Cache pip
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
+      # 3️⃣ Upgrade pip and install dependencies
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary -r requirements.txt
 
-  run-engines:
-    needs: setup-python
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        engine: [nexus_core, range_engine, hybrid_engine, ai_engine]
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.13"
-
-      - name: Restore pip cache
+      # 4️⃣ Cache SQLite databases (optional, speeds up repeated runs)
+      - name: Cache Databases
         uses: actions/cache@v3
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          path: |
+            ./db/*.db
+          key: nexus-db-${{ runner.os }}-${{ hashFiles('db/*.db') }}
           restore-keys: |
-            ${{ runner.os }}-pip-
+            nexus-db-${{ runner.os }}-
 
-      - name: Install Dependencies
+      # 5️⃣ Run Nexus AI/Engines Workflow
+      - name: Run Nexus Engine
         run: |
-          python -m pip install --upgrade pip
-          pip install --prefer-binary -r requirements.txt
-
-      - name: Run Engine
-        run: python engine/${{ matrix.engine }}.py
-
-  run-consensus:
-    needs: run-engines
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.13"
-
-      - name: Restore pip cache
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install --prefer-binary -r requirements.txt
-
-      - name: Run Consensus
-        run: python engine/run_consensus.py
-
-      - name: Dispatch Alerts
-        run: python engine/nexus_dispatcher.py
+          echo "🚀 Starting Nexus Engine at $(date)"
+          python -m engine.nexus_core
+          python -m engine.range_engine
+          python -m engine.hybrid_engine
+          python -m engine.ai_engine
+          python -m engine.run_consensus
+          python -m engine.nexus_dispatcher
