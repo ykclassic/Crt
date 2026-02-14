@@ -1,133 +1,41 @@
 import ccxt
 import pandas as pd
-import sqlite3
-import logging
-import json
-import os
-import requests
 from datetime import datetime
-from config import DB_FILE, WEBHOOK_URL, ENGINES, PERFORMANCE_FILE
+from config import *
+from db_utils import init_db, insert_signal
 
-# ----------------------------
-# Logging
-# ----------------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+DB_NAME = "hybrid.db"
+init_db(DB_NAME)
 
-STRATEGY_ID = "hybrid_v1"
-APP_NAME = ENGINES.get(STRATEGY_ID, "Nexus Hybrid")
+exchange = getattr(ccxt, EXCHANGE_ID)()
 
-SYMBOLS = [
-    "BTC/USDT",
-    "ETH/USDT",
-    "SOL/USDT",
-    "BNB/USDT",
-    "XRP/USDT",
-    "ADA/USDT"
-]
+def fetch_df(symbol, timeframe):
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=200)
+    df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
+    return df
 
-# ----------------------------
-# Engine Status
-# ----------------------------
-
-def is_engine_enabled():
-    if not os.path.exists(PERFORMANCE_FILE):
-        return True
+for symbol in ASSETS:
     try:
-        with open(PERFORMANCE_FILE, "r") as f:
-            perf = json.load(f)
-            return perf.get(STRATEGY_ID, {}).get("status", "LIVE") == "LIVE"
-    except:
-        return True
+        df = fetch_df(symbol, EXECUTION_TF)
+        df["ema8"] = df["close"].ewm(span=8).mean()
+        df["ema21"] = df["close"].ewm(span=21).mean()
 
-def notify(msg):
-    if WEBHOOK_URL:
-        try:
-            requests.post(WEBHOOK_URL, json={"content": f"**[{APP_NAME}]**\n{msg}"})
-        except Exception as e:
-            logging.error(f"Discord notify failed: {e}")
+        price = df["close"].iloc[-1]
+        direction = None
 
-# ----------------------------
-# Engine
-# ----------------------------
+        if df["ema8"].iloc[-1] > df["ema21"].iloc[-1]:
+            direction = "LONG"
+        elif df["ema8"].iloc[-1] < df["ema21"].iloc[-1]:
+            direction = "SHORT"
 
-def run_hybrid_engine():
+        if direction:
+            sl = price * (1 - RISK_PERCENT) if direction == "LONG" else price * (1 + RISK_PERCENT)
+            tp = price * (1 + REWARD_PERCENT) if direction == "LONG" else price * (1 - REWARD_PERCENT)
 
-    if not is_engine_enabled():
-        logging.warning(f"{APP_NAME} in RECOVERY mode. Skipping.")
-        return
+            insert_signal(DB_NAME, (
+                symbol, direction, price, sl, tp,
+                datetime.utcnow().isoformat()
+            ))
 
-    ex = ccxt.gateio({"enableRateLimit": True})
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    for asset in SYMBOLS:
-        try:
-            ohlcv = ex.fetch_ohlcv(asset, "1h", limit=120)
-            if len(ohlcv) < 50:
-                continue
-
-            df = pd.DataFrame(ohlcv, columns=["ts", "o", "h", "l", "c", "v"])
-
-            df["ema8"] = df["c"].ewm(span=8).mean()
-            df["ema21"] = df["c"].ewm(span=21).mean()
-            df["vol_sma"] = df["v"].rolling(20).mean()
-
-            last = df.iloc[-1]
-            prev = df.iloc[-2]
-
-            signal = None
-            reason = ""
-
-            if (
-                last["ema8"] > last["ema21"]
-                and prev["ema8"] <= prev["ema21"]
-                and last["v"] > last["vol_sma"]
-            ):
-                signal = "LONG"
-                reason = "Bullish EMA Cross + Volume Surge"
-
-            elif (
-                last["ema8"] < last["ema21"]
-                and prev["ema8"] >= prev["ema21"]
-                and last["v"] > last["vol_sma"]
-            ):
-                signal = "SHORT"
-                reason = "Bearish EMA Cross + Volume Surge"
-
-            if signal:
-                price = float(last["c"])
-                sl = price * 0.98 if signal == "LONG" else price * 1.02
-                tp = price * 1.05 if signal == "LONG" else price * 0.95
-
-                cursor.execute("""
-                    INSERT INTO signals (
-                        engine, asset, timeframe, signal,
-                        entry, sl, tp, confidence,
-                        reason, status, ts
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    STRATEGY_ID,
-                    asset,
-                    "1h",
-                    signal,
-                    price,
-                    sl,
-                    tp,
-                    0.65,
-                    reason,
-                    "ACTIVE",
-                    datetime.utcnow().isoformat()
-                ))
-
-                conn.commit()
-                logging.info(f"{asset} {signal} signal generated")
-                notify(f"⚡ {signal} {asset} | {reason}")
-
-        except Exception as e:
-            logging.error(f"Hybrid Engine Error ({asset}): {e}")
-
-    conn.close()
-
-if __name__ == "__main__":
-    run_hybrid_engine()
+    except Exception as e:
+        print(f"Hybrid error {symbol}: {e}")
