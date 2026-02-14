@@ -1,6 +1,7 @@
 import ccxt
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
+datetime.now(timezone.utc).isoformat()
 from config import *
 from db_utils import init_db, insert_signal
 
