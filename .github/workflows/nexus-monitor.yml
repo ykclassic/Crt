@@ -1,16 +1,15 @@
 name: Nexus Alert Monitor
 
 on:
-  schedule:
-    - cron: "*/15 * * * *"   # Every 15 minutes
+  workflow_run:
+    workflows: ["Nexus Intelligence Pipeline"]
+    types:
+      - completed
   workflow_dispatch:
 
 jobs:
   run-monitor:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
 
     env:
       PYTHONUNBUFFERED: 1
@@ -18,26 +17,41 @@ jobs:
       SINGLE_RUN: "true"
 
     steps:
-      # 1️⃣ Checkout repository
+      # 1️⃣ Checkout
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # 2️⃣ Setup Python with pip caching
+      # 2️⃣ Download Database Artifact
+      - name: Download Signals Database
+        uses: actions/download-artifact@v4
+        with:
+          name: nexus-signals-db
+
+      # 3️⃣ Confirm DB Presence
+      - name: Verify Database
+        run: |
+          if [ ! -f nexus_signals.db ]; then
+            echo "❌ Database not found after artifact download."
+            exit 1
+          fi
+          echo "✅ Database loaded."
+
+      # 4️⃣ Setup Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
-      # 3️⃣ Install Dependencies
+      # 5️⃣ Install Dependencies
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary -r requirements.txt
 
-      # 4️⃣ Run Alert Monitor (Single Cycle Mode)
+      # 6️⃣ Run Alert Monitor
       - name: Run Alert Monitor
         run: |
           echo "🛡 Running Alert Monitor at $(date)"
