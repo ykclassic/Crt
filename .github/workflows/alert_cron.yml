@@ -2,41 +2,38 @@ name: Nexus Intelligence Pipeline
 
 on:
   schedule:
-    - cron: "0 * * * *"   # Every hour
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 jobs:
   run-nexus:
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-
     env:
       PYTHONUNBUFFERED: 1
       WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
 
     steps:
-      # 1️⃣ Checkout repository
+      # 1️⃣ Checkout
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # 2️⃣ Setup Python (with pip cache)
+      # 2️⃣ Setup Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
-      # 3️⃣ Install dependencies
+      # 3️⃣ Install Dependencies
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary -r requirements.txt
 
-      # 4️⃣ Run Nexus Pipeline
+      # 4️⃣ Run Nexus Engines
       - name: Run Nexus Engine
         run: |
           echo "🚀 Starting Nexus Engine at $(date)"
@@ -47,21 +44,19 @@ jobs:
           python run_consensus.py
           python nexus_dispatcher.py
 
-      # 5️⃣ Commit updated database (if changed)
-      - name: Commit Updated Database
+      # 5️⃣ Verify Database Exists
+      - name: Verify Database
         run: |
-          if [ -f nexus_signals.db ]; then
-            git config user.name "github-actions"
-            git config user.email "actions@github.com"
-
-            git add nexus_signals.db
-
-            if git diff --cached --quiet; then
-              echo "No DB changes to commit."
-            else
-              git commit -m "Update Nexus database [auto]"
-              git push
-            fi
-          else
-            echo "No database file found."
+          if [ ! -f nexus_signals.db ]; then
+            echo "❌ nexus_signals.db not found!"
+            exit 1
           fi
+          echo "✅ Database generated."
+
+      # 6️⃣ Upload Database Artifact
+      - name: Upload Signals Database
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-signals-db
+          path: nexus_signals.db
+          retention-days: 1
