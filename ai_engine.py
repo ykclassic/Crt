@@ -4,8 +4,8 @@ import pandas as pd
 import numpy as np
 import logging
 from datetime import datetime, timezone
-datetime.now(timezone.utc).isoformat()
-from config import DB_FILE, TIMEFRAMES, RISK_PERCENT, REWARD_PERCENT
+
+from config import DB_FILE, TIMEFRAMES, RISK_PERCENT, REWARD_PERCENT, TRADING_PAIRS
 from db_manager import initialize_database
 
 # ----------------------------
@@ -13,30 +13,17 @@ from db_manager import initialize_database
 # ----------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    format="%(asctime)s | AI_ENGINE | %(levelname)s | %(message)s"
 )
 
 # ----------------------------
 # Exchange
 # ----------------------------
-ex = ccxt.gateio({
-    "enableRateLimit": True,
-})
-
-# Limit to stable, liquid pairs
-SYMBOLS = [
-    "BTC/USDT",
-    "ETH/USDT",
-    "SOL/USDT",
-    "BNB/USDT",
-    "XRP/USDT",
-    "ADA/USDT"
-]
+ex = ccxt.gateio({"enableRateLimit": True})
 
 # ----------------------------
 # Indicators
 # ----------------------------
-
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -49,20 +36,10 @@ def compute_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def compute_atr(df, period=14):
-    high_low = df["high"] - df["low"]
-    high_close = np.abs(df["high"] - df["close"].shift())
-    low_close = np.abs(df["low"] - df["close"].shift())
-
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
-
-
 def calculate_indicators(df):
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
     df["rsi"] = compute_rsi(df["close"])
-    df["atr"] = compute_atr(df)
     df["vol_change"] = df["volume"].pct_change()
     df["dist_ema"] = (df["close"] - df["ema20"]) / df["ema20"]
     return df
@@ -71,11 +48,10 @@ def calculate_indicators(df):
 # ----------------------------
 # Signal Logic
 # ----------------------------
-
 def generate_signal(df):
     latest = df.iloc[-1]
 
-    if np.isnan(latest["atr"]) or np.isnan(latest["rsi"]):
+    if np.isnan(latest["rsi"]):
         return None
 
     if latest["ema20"] > latest["ema50"] and latest["rsi"] < 70:
@@ -90,81 +66,74 @@ def generate_signal(df):
 # ----------------------------
 # Save Signal
 # ----------------------------
-
-def save_signal(asset, timeframe, signal, df):
+def save_signal(pair, timeframe, direction, df):
     latest = df.iloc[-1]
-    entry = float(latest["close"])
-    atr = float(latest["atr"])
+    entry_price = float(latest["close"])
 
-    if atr <= 0:
-        return
-
-    if signal == "LONG":
-        sl = entry_price * (1 - RISK_PERCENT)
-        tp = entry_price * (1 + REWARD_PERCENT)
+    if direction == "LONG":
+        stop_loss = entry_price * (1 - RISK_PERCENT)
+        take_profit = entry_price * (1 + REWARD_PERCENT)
     else:
-        sl = entry_price * (1 + RISK_PERCENT)
-        tp = entry_price * (1 - REWARD_PERCENT)
+        stop_loss = entry_price * (1 + RISK_PERCENT)
+        take_profit = entry_price * (1 - REWARD_PERCENT)
 
     conn = sqlite3.connect(DB_FILE)
     conn.execute("""
         INSERT INTO signals (
-            engine, asset, timeframe, signal,
-            entry, sl, tp, confidence,
-            rsi, vol_change, dist_ema,
-            reason, status, ts
+            engine, pair, timeframe, direction,
+            entry, stop_loss, take_profit,
+            confidence, rsi, vol_change, dist_ema,
+            reason, status, timestamp
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         "AI_ENGINE",
-        asset,
+        pair,
         timeframe,
-        signal,
-        entry,
-        sl,
-        tp,
+        direction,
+        entry_price,
+        stop_loss,
+        take_profit,
         0.75,
         float(latest["rsi"]),
         float(latest["vol_change"]),
         float(latest["dist_ema"]),
         "EMA+RSI",
         "ACTIVE",
-        datetime.utcnow().isoformat()
+        datetime.now(timezone.utc).isoformat()
     ))
     conn.commit()
     conn.close()
 
-    logging.info(f"Signal saved: {asset} {timeframe} {signal}")
+    logging.info(f"{pair} {timeframe} {direction} saved")
 
 
 # ----------------------------
 # Engine Runner
 # ----------------------------
-
 def run():
     logging.info("Starting AI Engine")
     initialize_database()
 
-    for symbol in SYMBOLS:
+    for pair in TRADING_PAIRS:
         for tf in TIMEFRAMES:
             try:
-                ohlcv = ex.fetch_ohlcv(symbol, tf, limit=200)
-
+                ohlcv = ex.fetch_ohlcv(pair, tf, limit=200)
                 if len(ohlcv) < 60:
                     continue
 
                 df = pd.DataFrame(
                     ohlcv,
-                    columns=["timestamp","open","high","low","close","volume"]
+                    columns=["timestamp", "open", "high", "low", "close", "volume"]
                 )
 
                 df = calculate_indicators(df)
                 signal = generate_signal(df)
 
                 if signal:
-                    save_signal(symbol, tf, signal, df)
+                    save_signal(pair, tf, signal, df)
 
             except Exception as e:
-                logging.error(f"{symbol} {tf} error: {str(e)}")
+                logging.error(f"{pair} {tf} error: {e}")
 
     logging.info("AI Engine cycle complete")
 
