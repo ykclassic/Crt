@@ -43,13 +43,12 @@ jobs:
           restore-keys: |
             nexus-db-${{ runner.os }}-
 
-      # 5️⃣ Run Nexus AI/Engines Workflow
       - name: Run Nexus Engine
         run: |
           echo "🚀 Starting Nexus Engine at $(date)"
-          python -m engine.nexus_core
-          python -m engine.range_engine
-          python -m engine.hybrid_engine
-          python -m engine.ai_engine
-          python -m engine.run_consensus
-          python -m engine.nexus_dispatcher
+          python nexus_core.py
+          python range_engine.py
+          python hybrid_engine.py
+          python ai_engine.py
+          python run_consensus.py
+          python nexus_dispatcher.py
