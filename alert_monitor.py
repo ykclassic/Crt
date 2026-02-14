@@ -13,6 +13,21 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | ALERT_MONITOR | %(levelname)s | %(message)s"
 )
+def ensure_schema(conn):
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pair TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            entry REAL,
+            stop_loss REAL,
+            take_profit REAL,
+            status TEXT DEFAULT 'ACTIVE',
+            timestamp TEXT
+        )
+    """)
+    conn.commit()
 
 # ===============================
 # Configuration
