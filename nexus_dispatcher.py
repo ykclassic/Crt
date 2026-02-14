@@ -1,20 +1,32 @@
 import requests
+import logging
 from config import WEBHOOK_URL
-from run_consensus import consensus_results
 
-for symbol, data, label in consensus_results:
-    direction = data[1]
-    entry = data[2]
-    sl = data[3]
-    tp = data[4]
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | DISPATCH | %(levelname)s | %(message)s"
+)
+
+def dispatch_signal(pair, direction, tier,
+                    confidence, entry,
+                    stop_loss, take_profit):
+
+    if not WEBHOOK_URL:
+        logging.warning("Webhook not configured")
+        return
 
     message = f"""
-Asset: {symbol}
+Asset: {pair}
 Direction: {direction}
-Entry: {entry}
-Stop Loss: {sl}
-Take Profit: {tp}
-Consensus: {label}
+Tier: {tier}
+Confidence: {round(confidence, 2)}
+Entry: {round(entry, 4)}
+Stop Loss: {round(stop_loss, 4)}
+Take Profit: {round(take_profit, 4)}
 """
 
-    requests.post(WEBHOOK_URL, json={"content": message})
+    try:
+        requests.post(WEBHOOK_URL, json={"content": message})
+        logging.info(f"{pair} dispatched")
+    except Exception as e:
+        logging.error(f"{pair} dispatch failed: {e}")
