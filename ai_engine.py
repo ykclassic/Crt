@@ -5,7 +5,7 @@ import numpy as np
 import logging
 from datetime import datetime, timezone
 datetime.now(timezone.utc).isoformat()
-from config import DB_FILE, TIMEFRAMES, ATR_MULTIPLIER_SL, ATR_MULTIPLIER_TP
+from config import DB_FILE, TIMEFRAMES, RISK_PERCENT, REWARD_PERCENT
 from db_manager import initialize_database
 
 # ----------------------------
