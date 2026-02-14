@@ -6,14 +6,14 @@ import os
 EXCHANGE_ID = "gateio"
 
 # =========================
-# Assets (can override via GitHub Secrets)
-# Example secret:
-# ASSETS=BTC/USDT,ETH/USDT
+# Assets (Override via GitHub Secret if needed)
 # =========================
 ASSETS = os.getenv(
     "ASSETS",
     "BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,XRP/USDT,ADA/USDT"
 ).split(",")
+
+TRADING_PAIRS = ASSETS
 
 # =========================
 # Timeframes
@@ -25,17 +25,17 @@ CONFIRM_TF_2 = "1d"
 TIMEFRAMES = [EXECUTION_TF, CONFIRM_TF_1, CONFIRM_TF_2]
 
 # =========================
-# Risk Model (Percent Based)
+# Risk Model
 # =========================
-RISK_PERCENT = 0.02      # 2% stop loss
-REWARD_PERCENT = 0.05    # 5% take profit
+RISK_PERCENT = 0.02
+REWARD_PERCENT = 0.05
 
 # =========================
 # Database
 # =========================
-DB_FILE = os.getenv("DB_FILE", "nexus_signals.db")
+DB_FILE = os.getenv("DB_FILE", "signals.db")
 
 # =========================
-# Webhook (Optional)
+# Webhook
 # =========================
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
