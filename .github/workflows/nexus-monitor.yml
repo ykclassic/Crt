@@ -27,7 +27,7 @@ jobs:
       - name: Download Signals Database
         uses: actions/download-artifact@v4
         with:
-          name: nexus-signals-db
+          name: nexus_signals.db
 
       # 3️⃣ Confirm DB Presence
       - name: Verify Database
