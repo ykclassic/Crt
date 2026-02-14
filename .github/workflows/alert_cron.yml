@@ -2,48 +2,42 @@ name: Nexus Intelligence Pipeline
 
 on:
   schedule:
-    - cron: "0 * * * *"   # Runs every hour
+    - cron: "0 * * * *"  # Every hour
   workflow_dispatch:
 
 jobs:
-  run-intelligence:
+  run-nexus:
     runs-on: ubuntu-latest
 
     permissions:
       contents: write
 
+    env:
+      PYTHONUNBUFFERED: 1
+
     steps:
 
-      # 1️⃣ Checkout Repository
+      # 1️⃣ Checkout Repository (fast clone)
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # 2️⃣ Setup Python 3.12
+      # 2️⃣ Setup Python with pip caching
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
 
-      # 3️⃣ Upgrade pip and install dependencies
+      # 3️⃣ Install Dependencies (binary preferred)
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary -r requirements.txt
 
-      # 4️⃣ Cache SQLite databases (optional, speeds up repeated runs)
-      - name: Cache Databases
-        uses: actions/cache@v3
-        with:
-          path: |
-            ./db/*.db
-          key: nexus-db-${{ runner.os }}-${{ hashFiles('db/*.db') }}
-          restore-keys: |
-            nexus-db-${{ runner.os }}-
-
-      - name: Run Nexus Engine
+      # 4️⃣ Run Nexus Pipeline
+      - name: Run Nexus Engines
         run: |
           echo "🚀 Starting Nexus Engine at $(date)"
           python nexus_core.py
@@ -52,3 +46,14 @@ jobs:
           python ai_engine.py
           python run_consensus.py
           python nexus_dispatcher.py
+
+      # 5️⃣ Commit updated DB if changed (optional persistence)
+      - name: Commit Updated Database
+        run: |
+          if [ -f nexus_signals.db ]; then
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add nexus_signals.db || true
+            git commit -m "Update Nexus database [auto]" || true
+            git push || true
+          fi
