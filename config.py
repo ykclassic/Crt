@@ -36,6 +36,18 @@ REWARD_PERCENT = 0.05
 DB_FILE = os.getenv("DB_FILE", "signals.db")
 
 # =========================
+# Governance & AI Learning
+# =========================
+# The file where the AI stores engine performance stats
+PERFORMANCE_FILE = "performance.json"
+
+# Win rate % below which an engine is put in 'RECOVERY' (Learning mode)
+KILL_THRESHOLD = 45.0 
+
+# Win rate % required to restore an engine to 'LIVE' status
+RECOVERY_THRESHOLD = 55.0
+
+# =========================
 # Webhook
 # =========================
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
