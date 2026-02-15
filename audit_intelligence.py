@@ -14,15 +14,10 @@ from config import (
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s'
+    format='%(asctime)s | AUDIT | %(levelname)s | %(message)s'
 )
 
-MAX_SIGNALS_PER_ENGINE = 30  # Prevent CI timeout
-
-
-# ============================================================
-# Market Outcome Checker (Cached + Safe)
-# ============================================================
+MAX_SIGNALS_PER_ENGINE = 30 
 
 def get_market_outcome(ex, cache, asset, timeframe, start_ts, tp, sl, signal_type):
     try:
@@ -30,108 +25,68 @@ def get_market_outcome(ex, cache, asset, timeframe, start_ts, tp, sl, signal_typ
             return "PENDING"
 
         since = int(datetime.fromisoformat(start_ts).timestamp() * 1000)
-
         cache_key = (asset, timeframe)
 
         if cache_key not in cache:
-            cache[cache_key] = ex.fetch_ohlcv(
-                asset,
-                timeframe,
-                since=since,
-                limit=100
-            )
+            cache[cache_key] = ex.fetch_ohlcv(asset, timeframe, since=since, limit=100)
 
         ohlcv = cache[cache_key]
 
         for candle in ohlcv:
             high, low = candle[2], candle[3]
-
             if signal_type == "LONG":
-                if high >= tp:
-                    return "WIN"
-                if low <= sl:
-                    return "LOSS"
-
+                if high >= tp: return "WIN"
+                if low <= sl: return "LOSS"
             elif signal_type == "SHORT":
-                if low <= tp:
-                    return "WIN"
-                if high >= sl:
-                    return "LOSS"
+                if low <= tp: return "WIN"
+                if high >= sl: return "LOSS"
 
         return "PENDING"
-
     except Exception as e:
-        logging.error(f"Audit error for {asset}: {e}")
+        logging.error(f"Market check error for {asset}: {e}")
         return "ERROR"
-
-
-# ============================================================
-# Main Audit
-# ============================================================
 
 def run_audit():
     logging.info("--- STARTING PERFORMANCE AUDIT ---")
 
     if not os.path.exists(DB_FILE):
-        logging.error("No database found for audit.")
+        logging.error(f"Database {DB_FILE} not found. Skipping audit.")
         return
 
     conn = sqlite3.connect(DB_FILE)
-
-    query = """
-        SELECT *
-        FROM signals
-        WHERE ts > datetime('now', '-7 days')
-    """
-    df = pd.read_sql_query(query, conn)
-
-    if df.empty:
-        logging.info("No signals to audit.")
+    try:
+        query = "SELECT * FROM signals WHERE ts > datetime('now', '-7 days')"
+        df = pd.read_sql_query(query, conn)
+    except Exception as e:
+        logging.error(f"Failed to query database: {e}")
         conn.close()
         return
 
-    # Gate.io with safety settings
-    ex = ccxt.gateio({
-        "enableRateLimit": True,
-        "timeout": 15000,
-    })
+    if df.empty:
+        logging.info("No signals found in the last 7 days to audit.")
+        conn.close()
+        return
 
+    ex = ccxt.gateio({"enableRateLimit": True, "timeout": 15000})
     performance = {}
     cache = {}
 
+    # Load existing performance data if available
     current_perf = {}
     if os.path.exists(PERFORMANCE_FILE):
         try:
             with open(PERFORMANCE_FILE, "r") as f:
                 current_perf = json.load(f)
-        except Exception:
+        except:
             current_perf = {}
 
     for engine in df['engine'].dropna().unique():
-        engine_df = df[df['engine'] == engine]
-
-        # Limit size for CI safety
-        engine_df = engine_df.tail(MAX_SIGNALS_PER_ENGINE)
-
-        outcomes = []
-
-        for _, row in engine_df.iterrows():
-            res = get_market_outcome(
-                ex,
-                cache,
-                row['asset'],
-                row['timeframe'],
-                row['ts'],
-                row['tp'],
-                row['sl'],
-                row['signal']
-            )
-            outcomes.append(res)
+        engine_df = df[df['engine'] == engine].tail(MAX_SIGNALS_PER_ENGINE)
+        outcomes = [get_market_outcome(ex, cache, r['asset'], r['timeframe'], r['ts'], r['tp'], r['sl'], r['signal']) for _, r in engine_df.iterrows()]
 
         completed = [o for o in outcomes if o in ["WIN", "LOSS"]]
         wins = completed.count("WIN")
         total = len(completed)
-
         win_rate = (wins / total * 100) if total > 0 else 0.0
 
         prev_status = current_perf.get(engine, {}).get("status", "LIVE")
@@ -140,16 +95,8 @@ def run_audit():
         if total >= 5:
             if win_rate < KILL_THRESHOLD:
                 status = "RECOVERY"
-                logging.warning(
-                    f"🚨 Engine {engine} moved to RECOVERY "
-                    f"(Win Rate: {round(win_rate, 2)}%)"
-                )
             elif prev_status == "RECOVERY" and win_rate >= RECOVERY_THRESHOLD:
                 status = "LIVE"
-                logging.info(
-                    f"✅ Engine {engine} restored to LIVE "
-                    f"(Win Rate: {round(win_rate, 2)}%)"
-                )
 
         performance[engine] = {
             "win_rate": round(win_rate, 2),
@@ -162,8 +109,7 @@ def run_audit():
         json.dump(performance, f, indent=4)
 
     conn.close()
-    logging.info(f"Audit complete. Performance saved to {PERFORMANCE_FILE}")
-
+    logging.info(f"Audit complete. Results saved to {PERFORMANCE_FILE}")
 
 if __name__ == "__main__":
     run_audit()
