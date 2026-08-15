@@ -33,7 +33,7 @@ REWARD_PERCENT = 0.05
 # =========================
 # Database
 # =========================
-DB_FILE = os.getenv("DB_FILE", "signals.db")
+DB_FILE = os.getenv("DB_FILE", "nexus_signals.db")
 
 # =========================
 # Governance & AI Learning
