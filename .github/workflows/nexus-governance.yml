@@ -55,8 +55,8 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
+          git add -f nexus_signals.db || true
           git add performance.json || true
-          git add nexus_signals.db || true
 
           if git diff --cached --quiet; then
             echo "No governance updates to commit."
