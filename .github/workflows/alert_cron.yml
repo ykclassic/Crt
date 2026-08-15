@@ -1,4 +1,4 @@
-Name: Nexus Intelligence Pipeline
+name: Nexus Intelligence Pipeline
 
 on:
   schedule:
