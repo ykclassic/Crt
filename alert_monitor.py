@@ -5,7 +5,7 @@ import logging
 import time
 import os
 from datetime import datetime, timezone
-from config import DB_FILE
+from config import DB_FILE, EXCHANGE_ID
 
 # ===============================
 # Environment / Config
@@ -30,44 +30,27 @@ logging.basicConfig(
 )
 
 # ===============================
-# Exchange
+# Exchange Integration
 # ===============================
 
-exchange = ccxt.gateio({
+# Validate exchange support in the current environment before execution
+if EXCHANGE_ID not in ccxt.exchanges:
+    raise EnvironmentError(
+        f"Exchange '{EXCHANGE_ID}' is not supported by the currently installed CCXT version."
+    )
+
+exchange = getattr(ccxt, EXCHANGE_ID)({
     "enableRateLimit": True,
     "timeout": 15000
 })
-
-# ===============================
-# Database Schema
-# ===============================
-
-def ensure_schema(conn):
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            asset TEXT NOT NULL,
-            timeframe TEXT NOT NULL,
-            entry REAL,
-            sl REAL,
-            tp REAL,
-            signal TEXT NOT NULL,
-            status TEXT DEFAULT 'ACTIVE',
-            ts TEXT,
-            closed_at TEXT
-        )
-    """)
-    conn.commit()
 
 # ===============================
 # Database Helpers
 # ===============================
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    ensure_schema(conn)
-    return conn
+    # We strictly connect to the existing DB. Schema generation is handled by the core engines.
+    return sqlite3.connect(DB_PATH)
 
 
 def fetch_active_signals():
@@ -79,11 +62,12 @@ def fetch_active_signals():
         conn = get_connection()
         cursor = conn.cursor()
 
+        # Query updated to match the unified nexus_signals.db schema
         cursor.execute("""
-            SELECT id, asset, timeframe, entry, sl, tp, signal
+            SELECT id, symbol, timeframe, entry, stop_loss, take_profit, direction
             FROM signals
             WHERE status = 'ACTIVE'
-            ORDER BY ts DESC
+            ORDER BY timestamp DESC
             LIMIT ?
         """, (MAX_SIGNALS_PER_CYCLE,))
 
@@ -101,11 +85,10 @@ def update_signal_status(signal_id, status):
         conn = get_connection()
         conn.execute("""
             UPDATE signals
-            SET status = ?, closed_at = ?
+            SET status = ?
             WHERE id = ?
         """, (
             status,
-            datetime.now(timezone.utc).isoformat(),
             signal_id
         ))
         conn.commit()
@@ -117,27 +100,27 @@ def update_signal_status(signal_id, status):
 # Market Check Logic
 # ===============================
 
-def check_market_hit(asset, timeframe, sl, tp, signal_type):
+def check_market_hit(symbol, timeframe, stop_loss, take_profit, direction):
     try:
-        ohlcv = exchange.fetch_ohlcv(asset, timeframe, limit=50)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=50)
     except Exception as e:
-        logging.error(f"Market fetch failed for {asset}: {e}")
+        logging.error(f"Market fetch failed for {symbol}: {e}")
         return None
 
     for candle in ohlcv:
         high = candle[2]
         low = candle[3]
 
-        if signal_type.upper() == "LONG":
-            if low <= sl:
+        if direction.upper() == "LONG":
+            if low <= stop_loss:
                 return "STOP_LOSS"
-            if high >= tp:
+            if high >= take_profit:
                 return "TAKE_PROFIT"
 
-        elif signal_type.upper() == "SHORT":
-            if high >= sl:
+        elif direction.upper() == "SHORT":
+            if high >= stop_loss:
                 return "STOP_LOSS"
-            if low <= tp:
+            if low <= take_profit:
                 return "TAKE_PROFIT"
 
     return None
@@ -174,20 +157,20 @@ def monitor_cycle():
     logging.info(f"Monitoring {len(signals)} active signals.")
 
     for signal in signals:
-        signal_id, asset, timeframe, entry, sl, tp, signal_type = signal
+        signal_id, symbol, timeframe, entry, stop_loss, take_profit, direction = signal
 
-        result = check_market_hit(asset, timeframe, sl, tp, signal_type)
+        result = check_market_hit(symbol, timeframe, stop_loss, take_profit, direction)
 
         if result:
-            logging.info(f"{asset} {timeframe} hit {result}")
+            logging.info(f"{symbol} {timeframe} hit {result}")
 
             update_signal_status(signal_id, result)
 
             message = (
-                f"📊 {asset} ({timeframe})\n"
-                f"Signal: {signal_type}\n"
-                f"Result: {result}\n"
-                f"Time: {datetime.now(timezone.utc).isoformat()}"
+                f"📊 **{symbol}** ({timeframe})\n"
+                f"**Signal:** {direction}\n"
+                f"**Result:** {result}\n"
+                f"**Time:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
             )
 
             send_webhook(message)
