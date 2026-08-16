@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read # Required to download artifacts from other workflow runs
       
     steps:
       - name: Checkout Code
@@ -18,35 +19,28 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12' # Matched to 3.12 from your core Nexus pipeline
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # sqlite3 is built-in; pinned versions prevent binary mismatch
           pip install "pandas<2.1.0" "numpy<2.0.0" requests plotly kaleido
 
-      - name: 🛠️ Initialize Database Schema
-        # Using a multi-line block to avoid 'if' statement syntax errors
+      # Pulls the active production database artifact from your primary hourly workflow
+      - name: 📥 Download Nexus Database Artifact
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: nexus_pipeline.yml # MUST MATCH the exact filename of your main workflow file
+          name: nexus_signals_db
+          path: .
+
+      - name: 🛠️ Verify Database Exists
         run: |
-          python -c "
-          import sqlite3
-          import os
-          db_exists = os.path.exists('nexus.db')
-          conn = sqlite3.connect('nexus.db')
-          cursor = conn.cursor()
-          # Create table if it doesn't exist
-          cursor.execute('''CREATE TABLE IF NOT EXISTS signals 
-                           (id INTEGER PRIMARY KEY, ts TEXT, asset TEXT, signal TEXT, status TEXT)''')
-          # Check for status column
-          cursor.execute('PRAGMA table_info(signals)')
-          existing = [i[1] for i in cursor.fetchall()]
-          if 'status' not in existing:
-              cursor.execute('ALTER TABLE signals ADD COLUMN status TEXT DEFAULT \"OPEN\"')
-          conn.commit()
-          conn.close()
-          print('✅ Database schema verified.')
-          "
+          if [ ! -f nexus_signals.db ]; then
+            echo "❌ nexus_signals.db not found! Artifact download failed."
+            exit 1
+          fi
+          echo "✅ Production database successfully mounted."
 
       - name: 📊 Run Weekly Audit & Balance Check
         run: python performance_report.py
