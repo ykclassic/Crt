@@ -33,7 +33,6 @@ logging.basicConfig(
 # Exchange Integration
 # ===============================
 
-# Validate exchange support in the current environment before execution
 if EXCHANGE_ID not in ccxt.exchanges:
     raise EnvironmentError(
         f"Exchange '{EXCHANGE_ID}' is not supported by the currently installed CCXT version."
@@ -49,7 +48,6 @@ exchange = getattr(ccxt, EXCHANGE_ID)({
 # ===============================
 
 def get_connection():
-    # We strictly connect to the existing DB. Schema generation is handled by the core engines.
     return sqlite3.connect(DB_PATH)
 
 
@@ -62,7 +60,6 @@ def fetch_active_signals():
         conn = get_connection()
         cursor = conn.cursor()
 
-        # Query updated to match the unified nexus_signals.db schema
         cursor.execute("""
             SELECT id, symbol, timeframe, entry, stop_loss, take_profit, direction
             FROM signals
@@ -137,7 +134,7 @@ def send_webhook(message):
     try:
         requests.post(
             WEBHOOK_URL,
-            json={"text": message},
+            json={"content": message},  # Fixed key from 'text' to 'content' for Discord Webhooks
             timeout=10
         )
     except Exception as e:
