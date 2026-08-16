@@ -5,6 +5,14 @@ def init_db(db_name):
     conn = sqlite3.connect(db_name)
     cursor = conn.cursor()
 
+    # Check for legacy schema incompatibilities
+    cursor.execute("PRAGMA table_info(signals)")
+    columns = [info[1] for info in cursor.fetchall()]
+    
+    if columns and "engine_id" not in columns:
+        logging.warning(f"Legacy database schema detected in {db_name}. Dropping old table to rebuild...")
+        cursor.execute("DROP TABLE signals")
+
     # Master unified table for all engine signals
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS signals (
