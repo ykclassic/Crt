@@ -19,7 +19,7 @@ import ccxt
 import requests
 
 from config import DB_FILE, EXCHANGE_ID
-from governance_db import init_governance_db, record_evaluation
+from governance_db import get_terminal_signal_ids, init_governance_db, record_evaluation
 
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -51,7 +51,7 @@ exchange = getattr(ccxt, EXCHANGE_ID)(
 
 
 def get_signal_connection() -> sqlite3.Connection:
-    """Open the pipeline-owned signal database read-only."""
+    """Open the pipeline-owned signal database in read-only mode."""
     if not DB_PATH.exists():
         raise FileNotFoundError(f"Signal database not found: {DB_PATH}")
 
@@ -60,50 +60,7 @@ def get_signal_connection() -> sqlite3.Connection:
 
 
 def fetch_unresolved_signals() -> list[sqlite3.Row]:
-    """Fetch signals without a terminal governance evaluation."""
-    conn = None
-    try:
-        conn = get_signal_connection()
-        conn.row_factory = sqlite3.Row
-
-        return conn.execute(
-            """
-            SELECT
-                s.id,
-                s.engine_id,
-                s.symbol,
-                s.timeframe,
-                s.entry,
-                s.stop_loss,
-                s.take_profit,
-                s.direction,
-                s.timestamp
-            FROM signals AS s
-            LEFT JOIN nexus_governance_signal_evaluations AS ge
-                ON ge.signal_id = s.id
-            WHERE ge.signal_id IS NULL
-               OR ge.outcome NOT IN ('WIN', 'LOSS')
-            ORDER BY s.timestamp ASC
-            LIMIT ?
-            """,
-            (MAX_SIGNALS_PER_CYCLE,),
-        ).fetchall()
-
-    except sqlite3.Error as exc:
-        # The governance database is intentionally separate, so the read-only
-        # signal database cannot be modified by this module. We use a second
-        # query path below when the cross-database join is unavailable.
-        logging.debug("Cross-database query unavailable: %s", exc)
-        return fetch_unresolved_signals_from_governance_index()
-    finally:
-        if conn is not None:
-            conn.close()
-
-
-def fetch_unresolved_signals_from_governance_index() -> list[sqlite3.Row]:
-    """Read signal IDs already evaluated by governance, then filter in Python."""
-    from governance_db import get_terminal_signal_ids
-
+    """Fetch signals that do not yet have a terminal WIN/LOSS evaluation."""
     terminal_ids = get_terminal_signal_ids()
     conn = None
 
@@ -130,9 +87,11 @@ def fetch_unresolved_signals_from_governance_index() -> list[sqlite3.Row]:
             (MAX_SIGNALS_PER_CYCLE * 3,),
         ).fetchall()
 
-        return [row for row in rows if int(row["id"]) not in terminal_ids][
-            :MAX_SIGNALS_PER_CYCLE
+        unresolved = [
+            row for row in rows
+            if int(row["id"]) not in terminal_ids
         ]
+        return unresolved[:MAX_SIGNALS_PER_CYCLE]
     finally:
         if conn is not None:
             conn.close()
@@ -167,7 +126,7 @@ def check_market_hit(
     take_profit: float,
     direction: str,
 ) -> Optional[str]:
-    """Evaluate candles after signal creation without fabricating intrabar order."""
+    """Evaluate post-signal candles without fabricating intrabar order."""
     signal_ts_ms = parse_signal_timestamp(signal_timestamp)
     if signal_ts_ms is None:
         return None
@@ -234,7 +193,7 @@ def send_webhook(message: str) -> None:
 def monitor_cycle() -> None:
     """Evaluate unresolved signals and persist only governance state."""
     init_governance_db()
-    signals = fetch_unresolved_signals_from_governance_index()
+    signals = fetch_unresolved_signals()
 
     if not signals:
         logging.info("No unresolved signals.")
