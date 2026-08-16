@@ -1,38 +1,35 @@
+"""Evaluate pipeline-generated signals without mutating the signal database.
+
+Ownership contract:
+    nexus_signals.db     -> pipeline-owned, read-only here
+    nexus_governance.db  -> governance-owned, writable here
+"""
+
+from __future__ import annotations
+
 import logging
 import os
 import sqlite3
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import ccxt
 import requests
 
 from config import DB_FILE, EXCHANGE_ID
+from governance_db import init_governance_db, record_evaluation
 
-
-# ============================================================
-# Environment / Configuration
-# ============================================================
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SINGLE_RUN = os.getenv("SINGLE_RUN", "false").lower() == "true"
-
 POLL_INTERVAL = 300
 MAX_SIGNALS_PER_CYCLE = 50
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, DB_FILE)
-
-# Prevent processing candles that existed before the signal.
-# A small tolerance is useful because exchange timestamps are
-# normally candle-open timestamps.
 SIGNAL_TIME_TOLERANCE_MS = 1_000
 
-
-# ============================================================
-# Logging
-# ============================================================
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / DB_FILE
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,19 +37,12 @@ logging.basicConfig(
 )
 
 
-# ============================================================
-# Exchange Integration
-# ============================================================
-
 if EXCHANGE_ID not in ccxt.exchanges:
     raise EnvironmentError(
-        f"Exchange '{EXCHANGE_ID}' is not supported by the "
-        f"currently installed CCXT version."
+        f"Exchange '{EXCHANGE_ID}' is not supported by the installed CCXT version."
     )
 
-exchange_class = getattr(ccxt, EXCHANGE_ID)
-
-exchange = exchange_class(
+exchange = getattr(ccxt, EXCHANGE_ID)(
     {
         "enableRateLimit": True,
         "timeout": 15_000,
@@ -60,47 +50,72 @@ exchange = exchange_class(
 )
 
 
-# ============================================================
-# Database Helpers
-# ============================================================
+def get_signal_connection() -> sqlite3.Connection:
+    """Open the pipeline-owned signal database read-only."""
+    if not DB_PATH.exists():
+        raise FileNotFoundError(f"Signal database not found: {DB_PATH}")
 
-def get_connection() -> sqlite3.Connection:
-    """
-    Create a SQLite connection.
-
-    A timeout prevents immediate failure if another process has
-    a temporary SQLite lock.
-    """
-    return sqlite3.connect(
-        DB_PATH,
-        timeout=30,
-    )
+    uri = f"file:{DB_PATH.resolve()}?mode=ro"
+    return sqlite3.connect(uri, uri=True, timeout=30)
 
 
-def fetch_active_signals() -> list[tuple]:
-    """
-    Fetch currently active signals.
+def fetch_unresolved_signals() -> list[sqlite3.Row]:
+    """Fetch signals without a terminal governance evaluation."""
+    conn = None
+    try:
+        conn = get_signal_connection()
+        conn.row_factory = sqlite3.Row
 
-    The timestamp is included because the market monitor must not
-    evaluate candles that occurred before the signal was created.
-    """
-    if not os.path.exists(DB_PATH):
-        logging.warning(
-            "Database file missing. No signals to monitor."
-        )
-        return []
+        return conn.execute(
+            """
+            SELECT
+                s.id,
+                s.engine_id,
+                s.symbol,
+                s.timeframe,
+                s.entry,
+                s.stop_loss,
+                s.take_profit,
+                s.direction,
+                s.timestamp
+            FROM signals AS s
+            LEFT JOIN nexus_governance_signal_evaluations AS ge
+                ON ge.signal_id = s.id
+            WHERE ge.signal_id IS NULL
+               OR ge.outcome NOT IN ('WIN', 'LOSS')
+            ORDER BY s.timestamp ASC
+            LIMIT ?
+            """,
+            (MAX_SIGNALS_PER_CYCLE,),
+        ).fetchall()
 
+    except sqlite3.Error as exc:
+        # The governance database is intentionally separate, so the read-only
+        # signal database cannot be modified by this module. We use a second
+        # query path below when the cross-database join is unavailable.
+        logging.debug("Cross-database query unavailable: %s", exc)
+        return fetch_unresolved_signals_from_governance_index()
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def fetch_unresolved_signals_from_governance_index() -> list[sqlite3.Row]:
+    """Read signal IDs already evaluated by governance, then filter in Python."""
+    from governance_db import get_terminal_signal_ids
+
+    terminal_ids = get_terminal_signal_ids()
     conn = None
 
     try:
-        conn = get_connection()
+        conn = get_signal_connection()
+        conn.row_factory = sqlite3.Row
 
-        cursor = conn.cursor()
-
-        cursor.execute(
+        rows = conn.execute(
             """
             SELECT
                 id,
+                engine_id,
                 symbol,
                 timeframe,
                 entry,
@@ -109,104 +124,42 @@ def fetch_active_signals() -> list[tuple]:
                 direction,
                 timestamp
             FROM signals
-            WHERE status = 'ACTIVE'
-            ORDER BY timestamp DESC
+            ORDER BY timestamp ASC
             LIMIT ?
             """,
-            (MAX_SIGNALS_PER_CYCLE,),
-        )
+            (MAX_SIGNALS_PER_CYCLE * 3,),
+        ).fetchall()
 
-        return cursor.fetchall()
-
-    except sqlite3.Error as exc:
-        logging.error(
-            "Failed to fetch active signals: %s",
-            exc,
-        )
-        return []
-
+        return [row for row in rows if int(row["id"]) not in terminal_ids][
+            :MAX_SIGNALS_PER_CYCLE
+        ]
     finally:
         if conn is not None:
             conn.close()
 
-
-def update_signal_status(
-    signal_id: int,
-    status: str,
-) -> None:
-    """
-    Update a signal's lifecycle status.
-    """
-    conn = None
-
-    try:
-        conn = get_connection()
-
-        conn.execute(
-            """
-            UPDATE signals
-            SET status = ?
-            WHERE id = ?
-            """,
-            (
-                status,
-                signal_id,
-            ),
-        )
-
-        conn.commit()
-
-    except sqlite3.Error as exc:
-        logging.error(
-            "Failed to update signal %s: %s",
-            signal_id,
-            exc,
-        )
-
-    finally:
-        if conn is not None:
-            conn.close()
-
-
-# ============================================================
-# Timestamp Helpers
-# ============================================================
 
 def parse_signal_timestamp(timestamp: str) -> Optional[int]:
-    """
-    Convert a database timestamp into milliseconds since epoch.
-
-    Supports ISO-8601 timestamps and common SQLite datetime values.
-    """
+    """Convert an ISO-8601 or SQLite timestamp to epoch milliseconds."""
     if not timestamp:
         return None
 
     try:
         normalized = timestamp.strip()
-
         if normalized.endswith("Z"):
             normalized = normalized[:-1] + "+00:00"
 
         dt = datetime.fromisoformat(normalized)
-
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
 
         return int(dt.timestamp() * 1000)
-
     except ValueError:
-        logging.warning(
-            "Unable to parse signal timestamp: %s",
-            timestamp,
-        )
+        logging.warning("Unable to parse signal timestamp: %s", timestamp)
         return None
 
 
-# ============================================================
-# Market Check Logic
-# ============================================================
-
 def check_market_hit(
+    *,
     symbol: str,
     timeframe: str,
     signal_timestamp: str,
@@ -214,226 +167,140 @@ def check_market_hit(
     take_profit: float,
     direction: str,
 ) -> Optional[str]:
-    """
-    Determine whether TP or SL has been reached after the signal
-    was created.
+    """Evaluate candles after signal creation without fabricating intrabar order."""
+    signal_ts_ms = parse_signal_timestamp(signal_timestamp)
+    if signal_ts_ms is None:
+        return None
 
-    Important limitation:
-    OHLC candles do not reveal intrabar ordering when both TP and
-    SL occur inside the same candle. In that situation this
-    function deliberately returns PENDING rather than inventing
-    an execution order.
-    """
     try:
-        signal_ts_ms = parse_signal_timestamp(signal_timestamp)
-
-        if signal_ts_ms is None:
-            return None
-
-        ohlcv = exchange.fetch_ohlcv(
-            symbol,
-            timeframe,
-            limit=100,
-        )
-
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
     except Exception as exc:
-        logging.error(
-            "Market fetch failed for %s: %s",
-            symbol,
-            exc,
-        )
+        logging.error("Market fetch failed for %s: %s", symbol, exc)
         return None
 
     direction_upper = direction.upper()
 
     for candle in ohlcv:
-        candle_timestamp = candle[0]
+        candle_timestamp = int(candle[0])
         high = float(candle[2])
         low = float(candle[3])
 
-        # Ignore candles that existed before the signal.
         if candle_timestamp + SIGNAL_TIME_TOLERANCE_MS < signal_ts_ms:
             continue
 
         if direction_upper == "LONG":
-
             hit_stop = low <= float(stop_loss)
             hit_target = high >= float(take_profit)
-
         elif direction_upper == "SHORT":
-
             hit_stop = high >= float(stop_loss)
             hit_target = low <= float(take_profit)
-
         else:
-            logging.error(
-                "Unknown signal direction '%s' for %s",
-                direction,
-                symbol,
-            )
+            logging.error("Unknown signal direction '%s'", direction)
             return None
 
-        # Both levels were inside the same candle.
-        #
-        # OHLCV does not provide the sequence of intrabar events,
-        # therefore do not fabricate a result.
         if hit_stop and hit_target:
             logging.warning(
-                "Ambiguous candle for signal %s: both SL and TP "
-                "were reached in the same OHLC candle.",
-                symbol,
+                "Ambiguous candle for signal timestamp %s: both SL and TP were reached.",
+                signal_timestamp,
             )
             return None
 
         if hit_stop:
-            return "STOP_LOSS"
+            return "LOSS"
 
         if hit_target:
-            return "TAKE_PROFIT"
+            return "WIN"
 
     return None
 
 
-# ============================================================
-# Notifications
-# ============================================================
-
 def send_webhook(message: str) -> None:
-    """
-    Send a notification to the configured Discord webhook.
-    """
+    """Send a Discord notification when configured."""
     if not WEBHOOK_URL:
-        logging.warning(
-            "WEBHOOK_URL is not configured."
-        )
+        logging.warning("WEBHOOK_URL is not configured.")
         return
 
     try:
         response = requests.post(
             WEBHOOK_URL,
-            json={
-                "content": message,
-            },
+            json={"content": message},
             timeout=10,
         )
-
         response.raise_for_status()
-
     except requests.RequestException as exc:
-        logging.error(
-            "Webhook failed: %s",
-            exc,
-        )
+        logging.error("Webhook failed: %s", exc)
 
-
-# ============================================================
-# Monitor Cycle
-# ============================================================
 
 def monitor_cycle() -> None:
-    """
-    Process all currently active signals.
-    """
-    signals = fetch_active_signals()
+    """Evaluate unresolved signals and persist only governance state."""
+    init_governance_db()
+    signals = fetch_unresolved_signals_from_governance_index()
 
     if not signals:
-        logging.info("No active signals.")
+        logging.info("No unresolved signals.")
         return
 
-    logging.info(
-        "Monitoring %d active signal(s).",
-        len(signals),
-    )
+    logging.info("Evaluating %d unresolved signal(s).", len(signals))
 
     for signal in signals:
-        (
-            signal_id,
-            symbol,
-            timeframe,
-            entry,
-            stop_loss,
-            take_profit,
-            direction,
-            signal_timestamp,
-        ) = signal
+        signal_id = int(signal["id"])
+        outcome = check_market_hit(
+            symbol=str(signal["symbol"]),
+            timeframe=str(signal["timeframe"]),
+            signal_timestamp=str(signal["timestamp"]),
+            stop_loss=float(signal["stop_loss"]),
+            take_profit=float(signal["take_profit"]),
+            direction=str(signal["direction"]),
+        )
 
-        try:
-            result = check_market_hit(
-                symbol=symbol,
-                timeframe=timeframe,
-                signal_timestamp=signal_timestamp,
-                stop_loss=float(stop_loss),
-                take_profit=float(take_profit),
-                direction=direction,
+        if outcome is None:
+            record_evaluation(
+                signal_id=signal_id,
+                engine_id=str(signal["engine_id"]),
+                outcome="PENDING",
+                detected_at=None,
+                evidence="No unambiguous TP/SL event detected in available OHLCV data.",
             )
+            continue
 
-            if not result:
-                continue
+        detected_at = datetime.now(timezone.utc).isoformat()
+        record_evaluation(
+            signal_id=signal_id,
+            engine_id=str(signal["engine_id"]),
+            outcome=outcome,
+            detected_at=detected_at,
+            evidence="Outcome determined from post-signal OHLCV candles.",
+        )
 
-            logging.info(
-                "%s %s signal %s hit %s",
-                symbol,
-                timeframe,
-                signal_id,
-                result,
-            )
+        message = (
+            f"📊 **{signal['symbol']}** ({signal['timeframe']})\n"
+            f"**Engine:** {signal['engine_id']}\n"
+            f"**Signal:** {signal['direction']}\n"
+            f"**Entry:** {signal['entry']}\n"
+            f"**Stop Loss:** {signal['stop_loss']}\n"
+            f"**Take Profit:** {signal['take_profit']}\n"
+            f"**Result:** {outcome}\n"
+            f"**Signal Time:** {signal['timestamp']}\n"
+            f"**Detected:** {detected_at}"
+        )
+        send_webhook(message)
 
-            update_signal_status(
-                signal_id,
-                result,
-            )
-
-            message = (
-                f"📊 **{symbol}** ({timeframe})\n"
-                f"**Signal:** {direction}\n"
-                f"**Entry:** {entry}\n"
-                f"**Stop Loss:** {stop_loss}\n"
-                f"**Take Profit:** {take_profit}\n"
-                f"**Result:** {result}\n"
-                f"**Signal Time:** {signal_timestamp}\n"
-                f"**Detected:** "
-                f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
-            )
-
-            send_webhook(message)
-
-        except Exception as exc:
-            logging.exception(
-                "Unexpected error processing signal %s: %s",
-                signal_id,
-                exc,
-            )
-
-
-# ============================================================
-# Main Loop
-# ============================================================
 
 def run_monitor() -> None:
-    """
-    Run the alert monitor continuously or once, depending on
-    SINGLE_RUN.
-    """
-    logging.info(
-        "Starting alert monitor | single_run=%s",
-        SINGLE_RUN,
-    )
+    logging.info("Starting alert monitor | single_run=%s", SINGLE_RUN)
 
     while True:
-        monitor_cycle()
+        try:
+            monitor_cycle()
+        except Exception as exc:
+            logging.exception("Alert monitor cycle failed: %s", exc)
 
         if SINGLE_RUN:
-            logging.info(
-                "Single run mode enabled. Exiting."
-            )
+            logging.info("Single run mode enabled. Exiting.")
             break
 
         time.sleep(POLL_INTERVAL)
 
-
-# ============================================================
-# Entry Point
-# ============================================================
 
 if __name__ == "__main__":
     run_monitor()
