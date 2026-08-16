@@ -57,6 +57,24 @@ def log_to_database(pair, direction, tier, confidence, entry, stop_loss, take_pr
         logging.error(f"Failed to log signal to DB: {e}")
         return None
 
+def update_signal_performance(signal_id, outcome, pnl):
+    """Updates the signal outcome and PnL in the dispatched_alerts table for backtesting."""
+    try:
+        conn = sqlite3.connect(ROOT_DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE dispatched_alerts
+            SET outcome = ?, pnl = ?
+            WHERE id = ?
+        """, (outcome, pnl, signal_id))
+        
+        conn.commit()
+        conn.close()
+        logging.info(f"Successfully updated signal {signal_id} outcome to {outcome} (PnL: {pnl}%)")
+    except Exception as e:
+        logging.error(f"Failed to update signal performance for ID {signal_id}: {e}")
+
 def dispatch_signal(pair, direction, tier, confidence, entry, stop_loss, take_profit):
     initialize_dispatch_table()
 
