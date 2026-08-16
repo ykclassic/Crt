@@ -1,18 +1,15 @@
 import ccxt
 import pandas as pd
 from datetime import datetime, timezone
-datetime.now(timezone.utc).isoformat()
 from config import *
 from db_utils import init_db, insert_signal
 
-DB_NAME = "range.db"
-init_db(DB_NAME)
-
+init_db(DB_FILE)
 exchange = getattr(ccxt, EXCHANGE_ID)()
 
 def fetch_df(symbol, timeframe):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=200)
-    df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
+    df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "volume"])
     return df
 
 for symbol in ASSETS:
@@ -36,10 +33,16 @@ for symbol in ASSETS:
             sl = price * (1 - RISK_PERCENT) if direction == "LONG" else price * (1 + RISK_PERCENT)
             tp = price * (1 + REWARD_PERCENT) if direction == "LONG" else price * (1 - REWARD_PERCENT)
 
-            insert_signal(DB_NAME, (
-                symbol, direction, price, sl, tp,
-                datetime.utcnow().isoformat()
-            ))
+            insert_signal(DB_FILE, {
+                "engine_id": "RANGEMASTER",
+                "symbol": symbol,
+                "timeframe": EXECUTION_TF,
+                "direction": direction,
+                "entry": price,
+                "stop_loss": sl,
+                "take_profit": tp,
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            })
 
     except Exception as e:
         print(f"Range error {symbol}: {e}")
