@@ -32,13 +32,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary -r requirements.txt
+          pip install --upgrade ccxt
 
-      # 4️⃣ Initialize Database Schema
-      - name: Initialize Database
-        run: |
-          python -c "import sqlite3; conn = sqlite3.connect('nexus_signals.db'); conn.execute('CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, timeframe TEXT, signal_type TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);'); conn.commit(); conn.close()"
-
-      # 5️⃣ Run Nexus Engines
+      # 4️⃣ Run Nexus Engines
       - name: Run Nexus Engine
         run: |
           echo "🚀 Starting Nexus Engine at $(date)"
@@ -49,7 +45,7 @@ jobs:
           python run_consensus.py
           python nexus_dispatcher.py
 
-      # 6️⃣ Verify Database Exists
+      # 5️⃣ Verify Database Exists
       - name: Verify Database
         run: |
           if [ ! -f nexus_signals.db ]; then
@@ -58,7 +54,7 @@ jobs:
           fi
           echo "✅ Database generated."
 
-      # 7️⃣ Upload Database Artifact
+      # 6️⃣ Upload Database Artifact
       - name: Upload Signals Database
         uses: actions/upload-artifact@v4
         with:
