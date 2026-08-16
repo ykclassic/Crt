@@ -4,12 +4,13 @@ import ccxt
 import logging
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from config import (
     DB_FILE,
     PERFORMANCE_FILE,
     KILL_THRESHOLD,
     RECOVERY_THRESHOLD,
+    EXCHANGE_ID,
 )
 
 logging.basicConfig(
@@ -19,31 +20,31 @@ logging.basicConfig(
 
 MAX_SIGNALS_PER_ENGINE = 30 
 
-def get_market_outcome(ex, cache, asset, timeframe, start_ts, tp, sl, signal_type):
+def get_market_outcome(ex, cache, symbol, timeframe, start_ts, tp, sl, direction):
     try:
         if not tp or not sl:
             return "PENDING"
 
         since = int(datetime.fromisoformat(start_ts).timestamp() * 1000)
-        cache_key = (asset, timeframe)
+        cache_key = (symbol, timeframe)
 
         if cache_key not in cache:
-            cache[cache_key] = ex.fetch_ohlcv(asset, timeframe, since=since, limit=100)
+            cache[cache_key] = ex.fetch_ohlcv(symbol, timeframe, since=since, limit=100)
 
         ohlcv = cache[cache_key]
 
         for candle in ohlcv:
             high, low = candle[2], candle[3]
-            if signal_type == "LONG":
+            if direction.upper() == "LONG":
                 if high >= tp: return "WIN"
                 if low <= sl: return "LOSS"
-            elif signal_type == "SHORT":
+            elif direction.upper() == "SHORT":
                 if low <= tp: return "WIN"
                 if high >= sl: return "LOSS"
 
         return "PENDING"
     except Exception as e:
-        logging.error(f"Market check error for {asset}: {e}")
+        logging.error(f"Market check error for {symbol}: {e}")
         return "ERROR"
 
 def run_audit():
@@ -55,7 +56,8 @@ def run_audit():
 
     conn = sqlite3.connect(DB_FILE)
     try:
-        query = "SELECT * FROM signals WHERE ts > datetime('now', '-7 days')"
+        # Aligned with unified master schema column names (engine_id, symbol, timestamp, etc.)
+        query = "SELECT * FROM signals WHERE timestamp > datetime('now', '-7 days')"
         df = pd.read_sql_query(query, conn)
     except Exception as e:
         logging.error(f"Failed to query database: {e}")
@@ -67,11 +69,14 @@ def run_audit():
         conn.close()
         return
 
-    ex = ccxt.gateio({"enableRateLimit": True, "timeout": 15000})
+    # Exchange validation and initialization matching core architecture
+    if EXCHANGE_ID not in ccxt.exchanges:
+        raise EnvironmentError(f"Exchange '{EXCHANGE_ID}' is not supported by the current CCXT version.")
+
+    ex = getattr(ccxt, EXCHANGE_ID)({"enableRateLimit": True, "timeout": 15000})
     performance = {}
     cache = {}
 
-    # Load existing performance data if available
     current_perf = {}
     if os.path.exists(PERFORMANCE_FILE):
         try:
@@ -80,9 +85,15 @@ def run_audit():
         except:
             current_perf = {}
 
-    for engine in df['engine'].dropna().unique():
-        engine_df = df[df['engine'] == engine].tail(MAX_SIGNALS_PER_ENGINE)
-        outcomes = [get_market_outcome(ex, cache, r['asset'], r['timeframe'], r['ts'], r['tp'], r['sl'], r['signal']) for _, r in engine_df.iterrows()]
+    # Iterate using unified column names ('engine_id', 'symbol', 'take_profit', 'stop_loss', 'direction')
+    for engine in df['engine_id'].dropna().unique():
+        engine_df = df[df['engine_id'] == engine].tail(MAX_SIGNALS_PER_ENGINE)
+        outcomes = [
+            get_market_outcome(
+                ex, cache, r['symbol'], r['timeframe'], r['timestamp'], 
+                r['take_profit'], r['stop_loss'], r['direction']
+            ) for _, r in engine_df.iterrows()
+        ]
 
         completed = [o for o in outcomes if o in ["WIN", "LOSS"]]
         wins = completed.count("WIN")
@@ -102,7 +113,7 @@ def run_audit():
             "win_rate": round(win_rate, 2),
             "total_trades": total,
             "status": status,
-            "last_updated": datetime.now().isoformat()
+            "last_updated": datetime.now(timezone.utc).isoformat()
         }
 
     with open(PERFORMANCE_FILE, "w") as f:
