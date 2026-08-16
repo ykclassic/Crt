@@ -1,32 +1,18 @@
-import sqlite3
+"""Backward-compatible database initialization wrapper.
+
+The old implementation dropped and recreated the signals table. That violated
+pipeline database ownership and could destroy signal history. Initialization
+now delegates to the non-destructive pipeline persistence layer.
+"""
+
 from config import DB_FILE
+from db_utils import init_db
 
-def initialize_database():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
 
-    # Drop old schema to avoid column mismatch
-    cursor.execute("DROP TABLE IF EXISTS signals")
+def initialize_database() -> None:
+    """Initialize or safely migrate the pipeline-owned signal database."""
+    init_db(DB_FILE)
 
-    cursor.execute("""
-        CREATE TABLE signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            engine TEXT,
-            pair TEXT,
-            timeframe TEXT,
-            direction TEXT,
-            entry REAL,
-            stop_loss REAL,
-            take_profit REAL,
-            confidence REAL,
-            rsi REAL,
-            vol_change REAL,
-            dist_ema REAL,
-            reason TEXT,
-            status TEXT,
-            timestamp TEXT
-        )
-    """)
 
-    conn.commit()
-    conn.close()
+if __name__ == "__main__":
+    initialize_database()

@@ -5,39 +5,48 @@ on:
     - cron: "0 * * * *"
   workflow_dispatch:
 
+concurrency:
+  group: nexus-main-writer
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
 jobs:
   run-nexus:
     runs-on: ubuntu-latest
 
     env:
-      PYTHONUNBUFFERED: 1
+      PYTHONUNBUFFERED: "1"
       WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+      DB_FILE: nexus_signals.db
 
     steps:
-      # 1️⃣ Checkout
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          ref: main
 
-      # 2️⃣ Setup Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
-      # 3️⃣ Install Dependencies
       - name: Install Dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           pip install --prefer-binary -r requirements.txt
           pip install --upgrade ccxt
 
-      # 4️⃣ Run Nexus Engines
-      - name: Run Nexus Engine
+      - name: Run Nexus Engines
+        shell: bash
         run: |
-          echo "🚀 Starting Nexus Engine at $(date)"
+          set -euo pipefail
+          echo "🚀 Starting Nexus Engine at $(date -u)"
           python nexus_core.py
           python range_engine.py
           python hybrid_engine.py
@@ -45,19 +54,82 @@ jobs:
           python run_consensus.py
           python nexus_dispatcher.py
 
-      # 5️⃣ Verify Database Exists
-      - name: Verify Database
+      - name: Validate Pipeline Database
+        shell: bash
         run: |
+          set -euo pipefail
+
           if [ ! -f nexus_signals.db ]; then
             echo "❌ nexus_signals.db not found!"
             exit 1
           fi
-          echo "✅ Database generated."
 
-      # 6️⃣ Upload Database Artifact
-      - name: Upload Signals Database
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+
+          path = Path("nexus_signals.db")
+          conn = sqlite3.connect(path)
+
+          try:
+              integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+              if integrity != "ok":
+                  raise RuntimeError(f"SQLite integrity check failed: {integrity}")
+
+              columns = {
+                  row[1]
+                  for row in conn.execute("PRAGMA table_info(signals)")
+              }
+
+              required = {
+                  "id",
+                  "engine_id",
+                  "symbol",
+                  "timeframe",
+                  "direction",
+                  "entry",
+                  "stop_loss",
+                  "take_profit",
+                  "status",
+                  "timestamp",
+              }
+
+              missing = sorted(required - columns)
+              if missing:
+                  raise RuntimeError(
+                      "Signals database is missing required columns: "
+                      + ", ".join(missing)
+                  )
+
+              conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+              print("✅ Pipeline database integrity and schema checks passed.")
+          finally:
+              conn.close()
+          PY
+
+          ls -lh nexus_signals.db
+
+      - name: Persist Pipeline Database
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -f nexus_signals.db
+
+          if git diff --cached --quiet; then
+            echo "ℹ️ No signal database changes to commit."
+          else
+            git commit -m "chore: persist Nexus signal database [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Upload Signals Database Artifact
         uses: actions/upload-artifact@v4
         with:
           name: nexus_signals_db
           path: nexus_signals.db
-          retention-days: 1
+          if-no-files-found: error
+          retention-days: 7

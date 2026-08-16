@@ -1,58 +1,84 @@
-name: Aegis Sunday Performance Audit
+name: Nexus Weekly Performance Report
 
 on:
   schedule:
-    - cron: '59 23 * * 0' # Every Sunday 23:59 UTC
+    - cron: "59 23 * * 0"
   workflow_dispatch:
+
+concurrency:
+  group: nexus-main-writer
+  cancel-in-progress: false
+
+permissions:
+  contents: write
 
 jobs:
   report:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read 
-      
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      GOVERNANCE_DB_FILE: nexus_governance.db
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: main
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy requests plotly kaleido
+          pip install pandas requests
 
-      - name: 📥 Download Nexus Database Artifact
-        uses: dawidd6/action-download-artifact@v7 # Upgraded to suppress Node 20 warning
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }} # Explicitly pass token for API auth
-          workflow: alert_cron.yml # <--- UPDATE THIS TO YOUR HOURLY WORKFLOW FILE NAME
-          name: nexus_signals_db
-          path: .
-
-      - name: 🛠️ Verify Database Exists
+      - name: Verify Governance Database
         run: |
-          if [ ! -f nexus_signals.db ]; then
-            echo "❌ nexus_signals.db not found! Artifact download failed."
+          set -euo pipefail
+
+          if [ ! -f nexus_governance.db ]; then
+            echo "❌ nexus_governance.db not found."
             exit 1
           fi
-          echo "✅ Production database successfully mounted."
 
-      - name: 📊 Run Weekly Audit & Balance Check
+          python - <<'PY'
+          import sqlite3
+
+          conn = sqlite3.connect("nexus_governance.db")
+          try:
+              integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+              if integrity != "ok":
+                  raise RuntimeError(f"Governance DB integrity failed: {integrity}")
+          finally:
+              conn.close()
+          print("✅ Governance database verified.")
+          PY
+
+      - name: Generate Weekly Report
         run: python performance_report.py
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
 
-      - name: 💾 Persist Weekly Report
+      - name: Persist Weekly Report
         run: |
-          git config --local user.email "cto-bot@nexus-ai.com"
-          git config --local user.name "Nexus CTO Bot"
-          if [ -f "weekly_performance_report.csv" ]; then
-            git add weekly_performance_report.csv
-            git commit -m "Archive: Weekly Performance Report [skip ci]" || echo "Nothing to archive"
-            git push origin main
+          set -euo pipefail
+
+          if [ ! -f weekly_performance_report.csv ]; then
+            echo "❌ Weekly report was not generated."
+            exit 1
+          fi
+
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add weekly_performance_report.csv
+
+          if git diff --cached --quiet; then
+            echo "ℹ️ No weekly report changes to commit."
+          else
+            git commit -m "chore: archive weekly Nexus performance report [skip ci]"
+            git push origin HEAD:main
           fi
