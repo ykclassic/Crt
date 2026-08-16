@@ -3,10 +3,10 @@ import os
 # =========================
 # Exchange
 # =========================
-EXCHANGE_ID = "gateio"
+EXCHANGE_ID = "xt"  # Unified routing target
 
 # =========================
-# Assets (Override via GitHub Secret if needed)
+# Assets
 # =========================
 ASSETS = os.getenv(
     "ASSETS",
@@ -38,13 +38,8 @@ DB_FILE = os.getenv("DB_FILE", "nexus_signals.db")
 # =========================
 # Governance & AI Learning
 # =========================
-# The file where the AI stores engine performance stats
 PERFORMANCE_FILE = "performance.json"
-
-# Win rate % below which an engine is put in 'RECOVERY' (Learning mode)
 KILL_THRESHOLD = 45.0 
-
-# Win rate % required to restore an engine to 'LIVE' status
 RECOVERY_THRESHOLD = 55.0
 
 # =========================
