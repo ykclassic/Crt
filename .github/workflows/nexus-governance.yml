@@ -2,111 +2,504 @@ name: Nexus Governance Control
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # Every 30 minutes
+    - cron: "*/30 * * * *"
+
   workflow_dispatch:
+
+concurrency:
+  group: nexus-governance
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
 
 jobs:
   run-governance:
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-      actions: read 
+    timeout-minutes: 15
 
     env:
-      PYTHONUNBUFFERED: 1
+      PYTHONUNBUFFERED: "1"
       WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
       SINGLE_RUN: "true"
+      WORKFLOW_FILE: "nexus_pipeline.yml"
+      SIGNAL_ARTIFACT: "nexus_signals_db"
 
     steps:
-      # 1️⃣ Checkout repository
+      # ============================================================
+      # 1. Checkout repository
+      # ============================================================
+
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # 2️⃣ Setup Python (with pip cache)
+      # ============================================================
+      # 2. Setup Python
+      # ============================================================
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
-      # 3️⃣ Install Dependencies
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install --prefer-binary -r requirements.txt
-          pip install --upgrade ccxt requests
+      # ============================================================
+      # 3. Install dependencies
+      # ============================================================
 
-      # 4️⃣ Native API Download specifically targeting .github/workflows/nexus_pipeline.yml
-      - name: Download Signals Database via GitHub API
+      - name: Install Dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install --prefer-binary -r requirements.txt
+          fi
+
+          pip install --upgrade ccxt requests pandas
+
+      # ============================================================
+      # 4. Verify GitHub API access
+      # ============================================================
+
+      - name: Verify GitHub API Access
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          echo "🔍 Finding latest successful run for .github/workflows/nexus_pipeline.yml..."
-          
-          # Query using full workflow path endpoint
-          RUN_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/.github%2Fworkflows%2Fnexus_pipeline.yml/runs?status=success&per_page=1" \
-            | jq -r '.workflow_runs[0].id')
+          set -euo pipefail
 
-          if [ "$RUN_ID" == "null" ] || [ -z "$RUN_ID" ]; then
-            echo "❌ No successful runs found for nexus_pipeline.yml."
+          echo "🔐 Verifying GitHub API access..."
+
+          curl --fail-with-body \
+            --silent \
+            --show-error \
+            --location \
+            --request GET \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}" \
+            > repository.json
+
+          REPOSITORY_NAME=$(jq -r '.full_name // empty' repository.json)
+
+          if [ -z "$REPOSITORY_NAME" ]; then
+            echo "❌ GitHub API authentication/repository access failed."
+            cat repository.json
             exit 1
           fi
-          
-          echo "📥 Target Run ID: $RUN_ID. Fetching artifact URL..."
 
-          ARTIFACT_URL=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
-            | jq -r '.artifacts[]? | select(.name=="nexus_signals_db") | .archive_download_url')
+          echo "✅ Repository: ${REPOSITORY_NAME}"
 
-          if [ -z "$ARTIFACT_URL" ] || [ "$ARTIFACT_URL" == "null" ]; then
-            echo "❌ Artifact 'nexus_signals_db' not found in run $RUN_ID."
+      # ============================================================
+      # 5. Resolve nexus_pipeline.yml
+      # ============================================================
+
+      - name: Resolve Nexus Pipeline Workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "🔍 Resolving workflow: ${WORKFLOW_FILE}"
+
+          curl --fail-with-body \
+            --silent \
+            --show-error \
+            --location \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_FILE}" \
+            > workflow.json
+
+          WORKFLOW_ID=$(jq -r '.id // empty' workflow.json)
+          WORKFLOW_PATH=$(jq -r '.path // empty' workflow.json)
+          WORKFLOW_STATE=$(jq -r '.state // empty' workflow.json)
+
+          if [ -z "$WORKFLOW_ID" ]; then
+            echo "❌ Could not resolve ${WORKFLOW_FILE}."
+
+            echo "GitHub API response:"
+            cat workflow.json
+
             exit 1
           fi
 
-          echo "⬇️ Downloading artifact archive..."
-          curl -s -L -H "Authorization: token $GH_TOKEN" "$ARTIFACT_URL" -o artifact.zip
+          echo "✅ Workflow resolved."
+          echo "   ID:    ${WORKFLOW_ID}"
+          echo "   Path:  ${WORKFLOW_PATH}"
+          echo "   State: ${WORKFLOW_STATE}"
 
-          echo "📦 Extracting database..."
+          echo "WORKFLOW_ID=${WORKFLOW_ID}" >> "$GITHUB_ENV"
+
+      # ============================================================
+      # 6. Find latest successful pipeline run
+      # ============================================================
+
+      - name: Find Latest Successful Nexus Pipeline Run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "🔍 Finding latest successful run..."
+
+          RUNS_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs?status=success&per_page=20"
+
+          curl --fail-with-body \
+            --silent \
+            --show-error \
+            --location \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "$RUNS_URL" \
+            > workflow_runs.json
+
+          RUN_ID=$(jq -r '
+            .workflow_runs
+            | map(select(.conclusion == "success"))
+            | sort_by(.created_at)
+            | reverse
+            | .[0].id // empty
+          ' workflow_runs.json)
+
+          if [ -z "$RUN_ID" ]; then
+            echo "❌ No successful runs were found for ${WORKFLOW_FILE}."
+
+            echo ""
+            echo "Recent workflow runs:"
+            jq -r '
+              .workflow_runs[]?
+              | [
+                  .id,
+                  .status,
+                  .conclusion,
+                  .created_at,
+                  .head_branch
+                ]
+              | @tsv
+            ' workflow_runs.json || true
+
+            exit 1
+          fi
+
+          RUN_CONCLUSION=$(jq -r '
+            .workflow_runs[]
+            | select(.id == '"$RUN_ID"')
+            | .conclusion
+          ' workflow_runs.json)
+
+          RUN_CREATED=$(jq -r '
+            .workflow_runs[]
+            | select(.id == '"$RUN_ID"')
+            | .created_at
+          ' workflow_runs.json)
+
+          RUN_BRANCH=$(jq -r '
+            .workflow_runs[]
+            | select(.id == '"$RUN_ID"')
+            | .head_branch
+          ' workflow_runs.json)
+
+          echo "✅ Successful pipeline run found."
+          echo "   Run ID:    ${RUN_ID}"
+          echo "   Conclusion:${RUN_CONCLUSION}"
+          echo "   Created:   ${RUN_CREATED}"
+          echo "   Branch:    ${RUN_BRANCH}"
+
+          echo "PIPELINE_RUN_ID=${RUN_ID}" >> "$GITHUB_ENV"
+
+      # ============================================================
+      # 7. Find nexus_signals_db artifact
+      # ============================================================
+
+      - name: Find Signals Database Artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "🔍 Searching run ${PIPELINE_RUN_ID} for artifact '${SIGNAL_ARTIFACT}'..."
+
+          curl --fail-with-body \
+            --silent \
+            --show-error \
+            --location \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${PIPELINE_RUN_ID}/artifacts?per_page=100" \
+            > artifacts.json
+
+          ARTIFACT_ID=$(jq -r '
+            .artifacts[]
+            | select(
+                .name == "'"${SIGNAL_ARTIFACT}"'"
+                and .expired == false
+              )
+            | .id
+          ' artifacts.json | head -n 1)
+
+          ARTIFACT_URL=$(jq -r '
+            .artifacts[]
+            | select(
+                .name == "'"${SIGNAL_ARTIFACT}"'"
+                and .expired == false
+              )
+            | .archive_download_url
+          ' artifacts.json | head -n 1)
+
+          if [ -z "$ARTIFACT_ID" ] || [ -z "$ARTIFACT_URL" ]; then
+            echo "❌ Artifact '${SIGNAL_ARTIFACT}' was not found."
+
+            echo ""
+            echo "Available artifacts:"
+            jq -r '
+              .artifacts[]?
+              | [
+                  .id,
+                  .name,
+                  .expired,
+                  .created_at
+                ]
+              | @tsv
+            ' artifacts.json || true
+
+            exit 1
+          fi
+
+          echo "✅ Artifact found."
+          echo "   Artifact ID: ${ARTIFACT_ID}"
+
+          echo "ARTIFACT_ID=${ARTIFACT_ID}" >> "$GITHUB_ENV"
+          echo "ARTIFACT_URL=${ARTIFACT_URL}" >> "$GITHUB_ENV"
+
+      # ============================================================
+      # 8. Download database artifact
+      # ============================================================
+
+      - name: Download Signals Database
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "⬇️ Downloading artifact ${ARTIFACT_ID}..."
+
+          curl --fail-with-body \
+            --silent \
+            --show-error \
+            --location \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2026-03-10" \
+            "$ARTIFACT_URL" \
+            --output artifact.zip
+
+          if [ ! -s artifact.zip ]; then
+            echo "❌ Downloaded artifact archive is empty."
+            exit 1
+          fi
+
+          echo "📦 Inspecting archive..."
+
+          unzip -l artifact.zip
+
+          echo "📦 Extracting artifact..."
+
           unzip -o artifact.zip
-          rm artifact.zip
 
-      - name: Verify Database Exists
+          rm -f artifact.zip
+
+      # ============================================================
+      # 9. Locate database
+      # ============================================================
+
+      - name: Verify Signals Database
+        shell: bash
         run: |
-          if [ ! -f nexus_signals.db ]; then
-            echo "❌ nexus_signals.db not found after extraction!"
-            ls -la
+          set -euo pipefail
+
+          echo "🔍 Searching for nexus_signals.db..."
+
+          DB_PATH=$(find . \
+            -type f \
+            -name "nexus_signals.db" \
+            -not -path "./.git/*" \
+            | head -n 1)
+
+          if [ -z "$DB_PATH" ]; then
+            echo "❌ nexus_signals.db was not found."
+
+            echo ""
+            echo "Repository files:"
+            find . -maxdepth 3 -type f | sort | head -n 200
+
             exit 1
           fi
-          echo "✅ Database successfully mounted."
 
-      # 5️⃣ Run Alert Monitor
-      - name: Run Alert Monitor
+          echo "✅ Database found at:"
+          echo "   ${DB_PATH}"
+
+          if [ "$DB_PATH" != "./nexus_signals.db" ]; then
+            cp "$DB_PATH" "./nexus_signals.db"
+            echo "✅ Database copied to repository root."
+          fi
+
+          ls -lh nexus_signals.db
+
+      # ============================================================
+      # 10. Validate SQLite database
+      # ============================================================
+
+      - name: Validate Signals Database
+        shell: bash
         run: |
-          echo "🛡 Running Alert Monitor at $(date)"
+          set -euo pipefail
+
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+
+          db = Path("nexus_signals.db")
+
+          if not db.exists():
+              raise SystemExit("❌ nexus_signals.db does not exist")
+
+          conn = sqlite3.connect(db)
+
+          try:
+              integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+
+              if integrity != "ok":
+                  raise RuntimeError(
+                      f"SQLite integrity check failed: {integrity}"
+                  )
+
+              tables = conn.execute("""
+                  SELECT name
+                  FROM sqlite_master
+                  WHERE type = 'table'
+                  ORDER BY name
+              """).fetchall()
+
+              print("✅ SQLite integrity check passed.")
+              print("Tables:")
+
+              for table in tables:
+                  print(f"  - {table[0]}")
+
+              signal_table = conn.execute("""
+                  SELECT name
+                  FROM sqlite_master
+                  WHERE type = 'table'
+                    AND name = 'signals'
+              """).fetchone()
+
+              if signal_table is None:
+                  raise RuntimeError(
+                      "Required 'signals' table was not found."
+                  )
+
+              print("✅ Required signals table exists.")
+
+          finally:
+              conn.close()
+          PY
+
+      # ============================================================
+      # 11. Run Alert Monitor
+      # ============================================================
+
+      - name: Run Alert Monitor
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "🛡 Running Alert Monitor at $(date -u)"
+
           python alert_monitor.py
 
-      # 6️⃣ Run Performance Audit
+      # ============================================================
+      # 12. Run Performance Audit
+      # ============================================================
+
       - name: Run Performance Audit
+        shell: bash
         run: |
+          set -euo pipefail
+
           echo "📊 Running Performance Audit"
+
           python audit_intelligence.py
 
-      # 7️⃣ Commit updated performance + DB (if changed)
-      - name: Commit Governance Updates
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
+      # ============================================================
+      # 13. Validate generated performance file
+      # ============================================================
 
-          git add -f nexus_signals.db || true
-          git add performance.json || true
+      - name: Validate Performance Output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f performance.json ]; then
+            echo "❌ performance.json was not generated."
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("performance.json")
+
+          with path.open("r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          if not isinstance(data, dict):
+              raise RuntimeError(
+                  "performance.json must contain a JSON object."
+              )
+
+          print(
+              f"✅ performance.json validated. "
+              f"Engines: {len(data)}"
+          )
+          PY
+
+      # ============================================================
+      # 14. Commit governance changes
+      # ============================================================
+
+      - name: Commit Governance Updates
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -f nexus_signals.db
+          git add performance.json
 
           if git diff --cached --quiet; then
-            echo "No governance updates to commit."
-          else
-            git commit -m "Governance update [auto]"
-            git push
+            echo "ℹ️ No governance updates to commit."
+            exit 0
           fi
+
+          git commit -m "chore: Nexus governance update [skip ci]"
+
+          git push
