@@ -41,7 +41,6 @@ def get_connection(db_name: str) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(path, timeout=30)
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
         yield conn
         conn.commit()
@@ -57,8 +56,8 @@ def _table_columns(conn: sqlite3.Connection) -> list[str]:
     return [str(row[1]) for row in rows]
 
 
-def _archive_legacy_table(conn: sqlite3.Connection) -> None:
-    """Preserve an incompatible legacy table instead of destroying it."""
+def _archive_legacy_table(conn: sqlite3.Connection) -> str:
+    """Rename an incompatible table so no historical data is destroyed."""
     suffix = 1
     while True:
         table_name = f"signals_legacy_{suffix}"
@@ -80,10 +79,8 @@ def _archive_legacy_table(conn: sqlite3.Connection) -> None:
         "Archiving incompatible legacy signals table as %s",
         table_name,
     )
-
-    conn.execute(
-        f'ALTER TABLE signals RENAME TO "{table_name}"'
-    )
+    conn.execute(f'ALTER TABLE signals RENAME TO "{table_name}"')
+    return table_name
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -123,6 +120,101 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_legacy_rows(
+    conn: sqlite3.Connection,
+    legacy_table: str,
+) -> int:
+    """Map the known pre-engine_id schema into the canonical schema."""
+    legacy_columns = {
+        row[1]
+        for row in conn.execute(
+            f'PRAGMA table_info("{legacy_table}")'
+        ).fetchall()
+    }
+
+    required_legacy = {
+        "id",
+        "engine",
+        "pair",
+        "timeframe",
+        "direction",
+        "entry",
+        "stop_loss",
+        "take_profit",
+        "timestamp",
+    }
+
+    if not required_legacy.issubset(legacy_columns):
+        logging.warning(
+            "Legacy table %s could not be migrated automatically; it remains "
+            "available for manual recovery.",
+            legacy_table,
+        )
+        return 0
+
+    optional = {
+        column
+        for column in (
+            "confidence",
+            "rsi",
+            "vol_change",
+            "dist_ema",
+            "reason",
+            "status",
+        )
+        if column in legacy_columns
+    }
+
+    status_expression = (
+        'COALESCE("status", \'ACTIVE\')'
+        if "status" in optional
+        else "'ACTIVE'"
+    )
+
+    def optional_expression(column: str) -> str:
+        return f'"{column}"' if column in optional else "NULL"
+
+    cursor = conn.execute(
+        f'''
+        INSERT OR IGNORE INTO signals(
+            id,
+            engine_id,
+            symbol,
+            timeframe,
+            direction,
+            entry,
+            stop_loss,
+            take_profit,
+            confidence,
+            rsi,
+            vol_change,
+            dist_ema,
+            reason,
+            status,
+            timestamp
+        )
+        SELECT
+            "id",
+            "engine",
+            "pair",
+            "timeframe",
+            "direction",
+            "entry",
+            "stop_loss",
+            "take_profit",
+            {optional_expression("confidence")},
+            {optional_expression("rsi")},
+            {optional_expression("vol_change")},
+            {optional_expression("dist_ema")},
+            {optional_expression("reason")},
+            {status_expression},
+            "timestamp"
+        FROM "{legacy_table}"
+        '''
+    )
+    return max(cursor.rowcount, 0)
+
+
 def _migrate_current_schema(conn: sqlite3.Connection) -> None:
     """Migrate a compatible schema without dropping signal history."""
     columns = set(_table_columns(conn))
@@ -132,14 +224,17 @@ def _migrate_current_schema(conn: sqlite3.Connection) -> None:
         return
 
     if "engine_id" not in columns:
-        _archive_legacy_table(conn)
+        legacy_table = _archive_legacy_table(conn)
         _create_schema(conn)
+        migrated = _migrate_legacy_rows(conn, legacy_table)
+        logging.info(
+            "Legacy signal migration completed: %d row(s) copied.",
+            migrated,
+        )
         return
 
     missing = set(REQUIRED_COLUMNS) - columns
 
-    # SQLite cannot add a NOT NULL column without a constant default. The only
-    # missing production column expected from older Nexus versions is status.
     if "status" in missing:
         conn.execute(
             "ALTER TABLE signals ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'"
