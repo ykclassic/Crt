@@ -4,6 +4,13 @@ from datetime import datetime, timezone
 from config import *
 from db_utils import init_db, insert_signal
 
+# Validate exchange support in the current environment before execution
+if EXCHANGE_ID not in ccxt.exchanges:
+    raise EnvironmentError(
+        f"Exchange '{EXCHANGE_ID}' is not supported by the currently installed CCXT version ({ccxt.__version__}). "
+        f"Please run 'pip install --upgrade ccxt' in your GitHub Actions runner or update requirements.txt."
+    )
+
 init_db(DB_FILE)
 exchange = getattr(ccxt, EXCHANGE_ID)()
 
