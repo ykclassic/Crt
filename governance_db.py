@@ -18,19 +18,21 @@ from config import GOVERNANCE_DB_FILE
 
 BASE_DIR = Path(__file__).resolve().parent
 GOVERNANCE_DB_PATH = BASE_DIR / GOVERNANCE_DB_FILE
-
 SCHEMA_VERSION = 1
 
 
 @contextmanager
 def get_connection() -> Iterator[sqlite3.Connection]:
     """Yield a configured governance database connection."""
+    GOVERNANCE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(GOVERNANCE_DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
+        # Governance DB is committed as a single file. DELETE journaling avoids
+        # leaving a WAL sidecar whose contents would not be included in Git.
+        conn.execute("PRAGMA journal_mode = DELETE")
+        conn.execute("PRAGMA synchronous = FULL")
         yield conn
         conn.commit()
     except Exception:
@@ -47,8 +49,6 @@ def utc_now() -> str:
 
 def init_governance_db() -> None:
     """Create the governance schema without touching the signal database."""
-    GOVERNANCE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-
     with get_connection() as conn:
         conn.executescript(
             """
@@ -156,6 +156,9 @@ def record_evaluation(
 
 def get_terminal_signal_ids() -> set[int]:
     """Return signals that have a final WIN/LOSS evaluation."""
+    if not GOVERNANCE_DB_PATH.exists():
+        return set()
+
     with get_connection() as conn:
         rows = conn.execute(
             """
@@ -225,6 +228,9 @@ def upsert_engine_governance(
 
 def load_engine_status(engine_id: str) -> Optional[str]:
     """Return the previously persisted status for an engine."""
+    if not GOVERNANCE_DB_PATH.exists():
+        return None
+
     with get_connection() as conn:
         row = conn.execute(
             """
