@@ -3,28 +3,14 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timezone
+from config import DB_FILE, WEBHOOK_URL
 
-# 1. Setup Paths - Targeting the existing root nexus_signals.db
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# If this file is in a subfolder, we look one level up for the root DB
-ROOT_DB_PATH = os.path.join(BASE_DIR, "nexus_signals.db")
+ROOT_DB_PATH = os.path.join(BASE_DIR, DB_FILE)
 
-if not os.path.exists(ROOT_DB_PATH):
-    PARENT_DIR = os.path.dirname(BASE_DIR)
-    ROOT_DB_PATH = os.path.join(PARENT_DIR, "nexus_signals.db")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | DISPATCHER | %(levelname)s | %(message)s")
 
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | DISPATCHER | %(levelname)s | %(message)s"
-)
-
-def initialize_database():
-    """
-    Ensures the database has the correct schema for AI learning.
-    Added 'outcome' and 'pnl' to track performance.
-    """
+def initialize_dispatch_table():
     try:
         conn = sqlite3.connect(ROOT_DB_PATH)
         conn.execute("""
@@ -49,7 +35,6 @@ def initialize_database():
         logging.error(f"Database initialization failed: {e}")
 
 def log_to_database(pair, direction, tier, confidence, entry, stop_loss, take_profit, status):
-    """Saves the signal for both record-keeping and AI training."""
     try:
         conn = sqlite3.connect(ROOT_DB_PATH)
         cursor = conn.cursor()
@@ -61,7 +46,7 @@ def log_to_database(pair, direction, tier, confidence, entry, stop_loss, take_pr
         """, (
             pair, direction, tier, confidence, entry, 
             stop_loss, take_profit, 
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             status
         ))
         row_id = cursor.lastrowid
@@ -72,65 +57,66 @@ def log_to_database(pair, direction, tier, confidence, entry, stop_loss, take_pr
         logging.error(f"Failed to log signal to DB: {e}")
         return None
 
-def update_signal_performance(signal_id, outcome, pnl):
-    """
-    Updates a signal with its actual market result.
-    The AI uses this table as a 'Training Set' to improve accuracy.
-    outcome: 'HIT_TP', 'HIT_SL', or 'MANUAL_CLOSE'
-    """
-    try:
-        conn = sqlite3.connect(ROOT_DB_PATH)
-        conn.execute("""
-            UPDATE dispatched_alerts 
-            SET outcome = ?, pnl = ?
-            WHERE id = ?
-        """, (outcome, pnl, signal_id))
-        conn.commit()
-        conn.close()
-        logging.info(f"Signal {signal_id} performance updated: {outcome}")
-    except Exception as e:
-        logging.error(f"Failed to update performance for ID {signal_id}: {e}")
+def dispatch_signal(pair, direction, tier, confidence, entry, stop_loss, take_profit):
+    initialize_dispatch_table()
 
-def dispatch_signal(pair, direction, tier,
-                    confidence, entry,
-                    stop_loss, take_profit):
-    """
-    Main entry point: Logs to DB, Dispatches to Discord.
-    """
-    initialize_database()
+    # Discord Embed Visual Formatting Mapping
+    trade_type = "BUY" if direction == "LONG" else "SELL"
+    color = 0x00FF00 if direction == "LONG" else 0xFF0000
+    setup_type = "bullish" if direction == "LONG" else "bearish"
+    clean_pair = pair.replace("/", "")
+    
+    # Calculate staggered Take Profit targets (40/30/30 distribution)
+    tp3 = take_profit
+    tp1 = entry + (tp3 - entry) * 0.33
+    tp2 = entry + (tp3 - entry) * 0.66
+    
+    # Risk/Reward Ratio Calculation
+    risk = abs(entry - stop_loss)
+    reward = abs(take_profit - entry)
+    rr_ratio = reward / risk if risk > 0 else 0
 
-    # Create the message
-    message = (
-        f"🚀 **New Signal Dispatched**\n"
-        f"**Asset:** {pair}\n"
-        f"**Direction:** {direction}\n"
-        f"**Tier:** {tier}\n"
-        f"**Confidence:** {round(confidence, 2)}\n"
-        f"**Entry:** {round(entry, 4)}\n"
-        f"**Stop Loss:** {round(stop_loss, 4)}\n"
-        f"**Take Profit:** {round(take_profit, 4)}"
+    # Ensure localized formatting for prices
+    description_text = (
+        f"{tier} Consensus indicates a strong {setup_type} setup on the 1-hour timeframe.\n\n"
+        f"**Entry Zone:** ${entry * 0.998:,.4f} - ${entry * 1.002:,.4f}\n"
+        f"**Take Profit 1:** ${tp1:,.4f} (40% of position)\n"
+        f"**Take Profit 2:** ${tp2:,.4f} (30% of position)\n"
+        f"**Take Profit 3:** ${tp3:,.4f} (30% of position)\n"
+        f"**Stop Loss:** ${stop_loss:,.4f}\n"
+        f"**Risk/Reward Ratio:** 1:{rr_ratio:.1f}\n"
+        f"**Timeframe:** 1H\n"
+        f"**Exchange:** XT.com\n\n"
+        f"Always manage your risk. Not financial advice."
     )
 
-    # Attempt to send to Discord
+    payload = {
+        "username": "Signal Bot",
+        "embeds": [{
+            "title": f"🚨 NEW TRADING SIGNAL: {trade_type} ${clean_pair} (Spot/Futures)",
+            "description": description_text,
+            "color": color
+        }]
+    }
+
     status = "INITIATED"
     if not WEBHOOK_URL:
         logging.warning(f"Webhook missing. Logging {pair} locally only.")
         status = "LOCAL_ONLY"
     else:
         try:
-            response = requests.post(WEBHOOK_URL, json={"content": message}, timeout=10)
+            response = requests.post(WEBHOOK_URL, json=payload, timeout=10)
             if response.status_code in [200, 204]:
                 status = "SUCCESS"
             else:
                 status = f"HTTP_ERR_{response.status_code}"
         except Exception as e:
-            status = f"NETWORK_ERR"
+            status = "NETWORK_ERR"
             logging.error(f"Discord POST failed: {e}")
 
-    # Log to database and return the ID for future 'learning' updates
     signal_id = log_to_database(pair, direction, tier, confidence, entry, stop_loss, take_profit, status)
     
     if status == "SUCCESS":
         logging.info(f"Signal {pair} ({tier}) live on Discord. ID: {signal_id}")
-    
+
     return signal_id
