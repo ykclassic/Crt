@@ -11,7 +11,7 @@ jobs:
 
     permissions:
       contents: write
-      actions: read # Required to fetch the database artifact from the primary workflow
+      actions: read 
 
     env:
       PYTHONUNBUFFERED: 1
@@ -44,9 +44,10 @@ jobs:
         uses: dawidd6/action-download-artifact@v7
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: nexus_pipeline.yml # Matches primary workflow file name
+          workflow: nexus_pipeline.yml
           name: nexus_signals_db
           path: .
+          allow_forks: true # <--- Fixes the Not Found API restriction
 
       - name: Verify Database Exists
         run: |
