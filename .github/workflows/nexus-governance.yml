@@ -54,7 +54,7 @@ jobs:
           if [ "$RUN_ID" == "null" ] || [ -z "$RUN_ID" ]; then
             echo "❌ No successful runs found for nexus_pipeline.yml."
             exit 1
-          end
+          fi
           
           echo "📥 Target Run ID: $RUN_ID. Fetching artifact URL..."
 
