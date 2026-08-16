@@ -11,6 +11,7 @@ jobs:
 
     permissions:
       contents: write
+      actions: read # Required to fetch the database artifact from the primary workflow
 
     env:
       PYTHONUNBUFFERED: 1
@@ -36,20 +37,38 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary -r requirements.txt
+          pip install --upgrade ccxt
 
-      # 4️⃣ Run Alert Monitor
+      # 4️⃣ Download Database Artifact from Primary Pipeline
+      - name: Download Signals Database
+        uses: dawidd6/action-download-artifact@v7
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: nexus_pipeline.yml # Matches primary workflow file name
+          name: nexus_signals_db
+          path: .
+
+      - name: Verify Database Exists
+        run: |
+          if [ ! -f nexus_signals.db ]; then
+            echo "❌ nexus_signals.db not found! Artifact download failed."
+            exit 1
+          fi
+          echo "✅ Database successfully mounted."
+
+      # 5️⃣ Run Alert Monitor
       - name: Run Alert Monitor
         run: |
           echo "🛡 Running Alert Monitor at $(date)"
           python alert_monitor.py
 
-      # 5️⃣ Run Performance Audit
+      # 6️⃣ Run Performance Audit
       - name: Run Performance Audit
         run: |
           echo "📊 Running Performance Audit"
           python audit_intelligence.py
 
-      # 6️⃣ Commit updated performance + DB (if changed)
+      # 7️⃣ Commit updated performance + DB (if changed)
       - name: Commit Governance Updates
         run: |
           git config user.name "github-actions"
