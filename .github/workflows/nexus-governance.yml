@@ -24,7 +24,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
       SINGLE_RUN: "true"
-      WORKFLOW_FILE: "nexus_pipeline.yml"
+      WORKFLOW_FILE: "alert_cron.yml"
       SIGNAL_ARTIFACT: "nexus_signals_db"
 
     steps:
