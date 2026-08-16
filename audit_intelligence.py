@@ -1,10 +1,13 @@
-import sqlite3
-import pandas as pd
-import ccxt
-import logging
 import json
+import logging
 import os
+import sqlite3
 from datetime import datetime, timezone
+from typing import Optional
+
+import ccxt
+import pandas as pd
+
 from config import (
     DB_FILE,
     PERFORMANCE_FILE,
@@ -13,114 +16,514 @@ from config import (
     EXCHANGE_ID,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | AUDIT | %(levelname)s | %(message)s'
+
+# ============================================================
+# Configuration
+# ============================================================
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+DB_PATH = os.path.join(
+    BASE_DIR,
+    DB_FILE,
 )
 
-MAX_SIGNALS_PER_ENGINE = 30 
+PERFORMANCE_PATH = os.path.join(
+    BASE_DIR,
+    PERFORMANCE_FILE,
+)
 
-def get_market_outcome(ex, cache, symbol, timeframe, start_ts, tp, sl, direction):
+MAX_SIGNALS_PER_ENGINE = 30
+OHLCV_LIMIT = 100
+
+SIGNAL_TIME_TOLERANCE_MS = 1_000
+
+
+# ============================================================
+# Logging
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | AUDIT | %(levelname)s | %(message)s",
+)
+
+
+# ============================================================
+# Exchange
+# ============================================================
+
+if EXCHANGE_ID not in ccxt.exchanges:
+    raise EnvironmentError(
+        f"Exchange '{EXCHANGE_ID}' is not supported by "
+        f"the installed CCXT version."
+    )
+
+exchange_class = getattr(ccxt, EXCHANGE_ID)
+
+exchange = exchange_class(
+    {
+        "enableRateLimit": True,
+        "timeout": 15_000,
+    }
+)
+
+
+# ============================================================
+# Timestamp Helpers
+# ============================================================
+
+def parse_timestamp(timestamp: str) -> Optional[int]:
+    """
+    Convert an ISO-8601/SQLite timestamp to epoch milliseconds.
+    """
+    if not timestamp:
+        return None
+
     try:
-        if not tp or not sl:
+        normalized = timestamp.strip()
+
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+
+        dt = datetime.fromisoformat(normalized)
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        return int(dt.timestamp() * 1000)
+
+    except ValueError:
+        logging.warning(
+            "Unable to parse timestamp: %s",
+            timestamp,
+        )
+        return None
+
+
+# ============================================================
+# Market Outcome
+# ============================================================
+
+def get_market_outcome(
+    ex,
+    symbol: str,
+    timeframe: str,
+    start_ts: str,
+    tp: float,
+    sl: float,
+    direction: str,
+) -> str:
+    """
+    Determine the outcome of a signal using candles that occur
+    after the signal timestamp.
+
+    If TP and SL occur in the same candle, the result is marked
+    PENDING because OHLCV data cannot establish intrabar order.
+    """
+    try:
+        if tp is None or sl is None:
             return "PENDING"
 
-        since = int(datetime.fromisoformat(start_ts).timestamp() * 1000)
-        cache_key = (symbol, timeframe)
+        signal_ts_ms = parse_timestamp(start_ts)
 
-        if cache_key not in cache:
-            cache[cache_key] = ex.fetch_ohlcv(symbol, timeframe, since=since, limit=100)
+        if signal_ts_ms is None:
+            return "ERROR"
 
-        ohlcv = cache[cache_key]
+        ohlcv = ex.fetch_ohlcv(
+            symbol,
+            timeframe,
+            since=signal_ts_ms,
+            limit=OHLCV_LIMIT,
+        )
+
+        direction_upper = direction.upper()
 
         for candle in ohlcv:
-            high, low = candle[2], candle[3]
-            if direction.upper() == "LONG":
-                if high >= tp: return "WIN"
-                if low <= sl: return "LOSS"
-            elif direction.upper() == "SHORT":
-                if low <= tp: return "WIN"
-                if high >= sl: return "LOSS"
+            candle_timestamp = candle[0]
+            high = float(candle[2])
+            low = float(candle[3])
+
+            if (
+                candle_timestamp + SIGNAL_TIME_TOLERANCE_MS
+                < signal_ts_ms
+            ):
+                continue
+
+            if direction_upper == "LONG":
+
+                hit_tp = high >= float(tp)
+                hit_sl = low <= float(sl)
+
+            elif direction_upper == "SHORT":
+
+                hit_tp = low <= float(tp)
+                hit_sl = high >= float(sl)
+
+            else:
+                logging.error(
+                    "Unknown direction '%s' for %s",
+                    direction,
+                    symbol,
+                )
+                return "ERROR"
+
+            # Ambiguous OHLC candle.
+            if hit_tp and hit_sl:
+                logging.warning(
+                    "Ambiguous candle detected for %s %s "
+                    "signal at %s: both TP and SL were reached.",
+                    symbol,
+                    timeframe,
+                    start_ts,
+                )
+                return "PENDING"
+
+            if hit_tp:
+                return "WIN"
+
+            if hit_sl:
+                return "LOSS"
 
         return "PENDING"
-    except Exception as e:
-        logging.error(f"Market check error for {symbol}: {e}")
+
+    except Exception as exc:
+        logging.error(
+            "Market check error for %s %s: %s",
+            symbol,
+            timeframe,
+            exc,
+        )
         return "ERROR"
 
-def run_audit():
-    logging.info("--- STARTING PERFORMANCE AUDIT ---")
 
-    if not os.path.exists(DB_FILE):
-        logging.error(f"Database {DB_FILE} not found. Skipping audit.")
+# ============================================================
+# Performance File
+# ============================================================
+
+def load_existing_performance() -> dict:
+    """
+    Load the previous performance state.
+    """
+    if not os.path.exists(PERFORMANCE_PATH):
+        return {}
+
+    try:
+        with open(
+            PERFORMANCE_PATH,
+            "r",
+            encoding="utf-8",
+        ) as file:
+            data = json.load(file)
+
+        if isinstance(data, dict):
+            return data
+
+    except (
+        OSError,
+        json.JSONDecodeError,
+    ) as exc:
+        logging.warning(
+            "Unable to load existing performance file: %s",
+            exc,
+        )
+
+    return {}
+
+
+# ============================================================
+# Database
+# ============================================================
+
+def load_recent_signals() -> pd.DataFrame:
+    """
+    Load signals generated within the last seven days.
+    """
+    if not os.path.exists(DB_PATH):
+        raise FileNotFoundError(
+            f"Database not found: {DB_PATH}"
+        )
+
+    query = """
+        SELECT *
+        FROM signals
+        WHERE timestamp > datetime('now', '-7 days')
+        ORDER BY timestamp ASC
+    """
+
+    conn = sqlite3.connect(
+        DB_PATH,
+        timeout=30,
+    )
+
+    try:
+        return pd.read_sql_query(
+            query,
+            conn,
+        )
+
+    finally:
+        conn.close()
+
+
+# ============================================================
+# Required Schema
+# ============================================================
+
+def validate_signal_schema(
+    df: pd.DataFrame,
+) -> None:
+    """
+    Validate that all columns required by the audit engine
+    exist before processing.
+    """
+    required_columns = {
+        "engine_id",
+        "symbol",
+        "timeframe",
+        "timestamp",
+        "take_profit",
+        "stop_loss",
+        "direction",
+    }
+
+    missing = sorted(
+        required_columns - set(df.columns)
+    )
+
+    if missing:
+        raise RuntimeError(
+            "Signals database is missing required columns: "
+            + ", ".join(missing)
+        )
+
+
+# ============================================================
+# Engine Audit
+# ============================================================
+
+def audit_engine(
+    engine_df: pd.DataFrame,
+    engine_name: str,
+) -> dict:
+    """
+    Audit the most recent signals for one strategy engine.
+    """
+    engine_df = (
+        engine_df
+        .sort_values("timestamp")
+        .tail(MAX_SIGNALS_PER_ENGINE)
+    )
+
+    outcomes: list[str] = []
+
+    for _, row in engine_df.iterrows():
+        outcome = get_market_outcome(
+            exchange,
+            str(row["symbol"]),
+            str(row["timeframe"]),
+            str(row["timestamp"]),
+            row["take_profit"],
+            row["stop_loss"],
+            str(row["direction"]),
+        )
+
+        outcomes.append(outcome)
+
+    completed = [
+        outcome
+        for outcome in outcomes
+        if outcome in {"WIN", "LOSS"}
+    ]
+
+    wins = completed.count("WIN")
+    losses = completed.count("LOSS")
+
+    total = len(completed)
+
+    win_rate = (
+        wins / total * 100
+        if total > 0
+        else 0.0
+    )
+
+    return {
+        "win_rate": round(win_rate, 2),
+        "total_trades": total,
+        "wins": wins,
+        "losses": losses,
+        "pending": outcomes.count("PENDING"),
+        "errors": outcomes.count("ERROR"),
+        "status": None,
+        "last_updated": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
+
+
+# ============================================================
+# Governance Status
+# ============================================================
+
+def determine_status(
+    previous_status: str,
+    win_rate: float,
+    total_trades: int,
+) -> str:
+    """
+    Apply the Nexus engine governance state machine.
+
+    Status transitions:
+
+        LIVE -> RECOVERY
+        RECOVERY -> LIVE
+
+    A minimum sample size is required before changing state.
+    """
+    status = previous_status
+
+    if total_trades < 5:
+        return status
+
+    if win_rate < KILL_THRESHOLD:
+        return "RECOVERY"
+
+    if (
+        previous_status == "RECOVERY"
+        and win_rate >= RECOVERY_THRESHOLD
+    ):
+        return "LIVE"
+
+    return status
+
+
+# ============================================================
+# Main Audit
+# ============================================================
+
+def run_audit() -> None:
+    """
+    Run the complete seven-day performance audit.
+    """
+    logging.info(
+        "--- STARTING PERFORMANCE AUDIT ---"
+    )
+
+    try:
+        df = load_recent_signals()
+
+    except FileNotFoundError as exc:
+        logging.error(str(exc))
         return
 
-    conn = sqlite3.connect(DB_FILE)
-    try:
-        # Aligned with unified master schema column names (engine_id, symbol, timestamp, etc.)
-        query = "SELECT * FROM signals WHERE timestamp > datetime('now', '-7 days')"
-        df = pd.read_sql_query(query, conn)
-    except Exception as e:
-        logging.error(f"Failed to query database: {e}")
-        conn.close()
+    except Exception as exc:
+        logging.error(
+            "Failed to load signals database: %s",
+            exc,
+        )
         return
 
     if df.empty:
-        logging.info("No signals found in the last 7 days to audit.")
-        conn.close()
+        logging.info(
+            "No signals found in the last 7 days to audit."
+        )
         return
 
-    # Exchange validation and initialization matching core architecture
-    if EXCHANGE_ID not in ccxt.exchanges:
-        raise EnvironmentError(f"Exchange '{EXCHANGE_ID}' is not supported by the current CCXT version.")
+    try:
+        validate_signal_schema(df)
 
-    ex = getattr(ccxt, EXCHANGE_ID)({"enableRateLimit": True, "timeout": 15000})
+    except RuntimeError as exc:
+        logging.error(str(exc))
+        return
+
+    logging.info(
+        "Loaded %d signals for audit.",
+        len(df),
+    )
+
+    current_performance = (
+        load_existing_performance()
+    )
+
     performance = {}
-    cache = {}
 
-    current_perf = {}
-    if os.path.exists(PERFORMANCE_FILE):
-        try:
-            with open(PERFORMANCE_FILE, "r") as f:
-                current_perf = json.load(f)
-        except:
-            current_perf = {}
+    engines = (
+        df["engine_id"]
+        .dropna()
+        .astype(str)
+        .unique()
+    )
 
-    # Iterate using unified column names ('engine_id', 'symbol', 'take_profit', 'stop_loss', 'direction')
-    for engine in df['engine_id'].dropna().unique():
-        engine_df = df[df['engine_id'] == engine].tail(MAX_SIGNALS_PER_ENGINE)
-        outcomes = [
-            get_market_outcome(
-                ex, cache, r['symbol'], r['timeframe'], r['timestamp'], 
-                r['take_profit'], r['stop_loss'], r['direction']
-            ) for _, r in engine_df.iterrows()
+    logging.info(
+        "Auditing %d engine(s).",
+        len(engines),
+    )
+
+    for engine in engines:
+        engine_df = df[
+            df["engine_id"].astype(str) == engine
         ]
 
-        completed = [o for o in outcomes if o in ["WIN", "LOSS"]]
-        wins = completed.count("WIN")
-        total = len(completed)
-        win_rate = (wins / total * 100) if total > 0 else 0.0
+        result = audit_engine(
+            engine_df,
+            engine,
+        )
 
-        prev_status = current_perf.get(engine, {}).get("status", "LIVE")
-        status = prev_status
+        previous_status = (
+            current_performance
+            .get(engine, {})
+            .get("status", "LIVE")
+        )
 
-        if total >= 5:
-            if win_rate < KILL_THRESHOLD:
-                status = "RECOVERY"
-            elif prev_status == "RECOVERY" and win_rate >= RECOVERY_THRESHOLD:
-                status = "LIVE"
+        result["status"] = determine_status(
+            previous_status=previous_status,
+            win_rate=result["win_rate"],
+            total_trades=result["total_trades"],
+        )
 
-        performance[engine] = {
-            "win_rate": round(win_rate, 2),
-            "total_trades": total,
-            "status": status,
-            "last_updated": datetime.now(timezone.utc).isoformat()
-        }
+        performance[engine] = result
 
-    with open(PERFORMANCE_FILE, "w") as f:
-        json.dump(performance, f, indent=4)
+        logging.info(
+            "Engine=%s | win_rate=%.2f%% | "
+            "trades=%d | wins=%d | losses=%d | "
+            "pending=%d | status=%s",
+            engine,
+            result["win_rate"],
+            result["total_trades"],
+            result["wins"],
+            result["losses"],
+            result["pending"],
+            result["status"],
+        )
 
-    conn.close()
-    logging.info(f"Audit complete. Results saved to {PERFORMANCE_FILE}")
+    try:
+        with open(
+            PERFORMANCE_PATH,
+            "w",
+            encoding="utf-8",
+        ) as file:
+            json.dump(
+                performance,
+                file,
+                indent=4,
+            )
+
+    except OSError as exc:
+        logging.error(
+            "Failed to write performance file: %s",
+            exc,
+        )
+        return
+
+    logging.info(
+        "Audit complete. Results saved to %s",
+        PERFORMANCE_PATH,
+    )
+
+
+# ============================================================
+# Entry Point
+# ============================================================
 
 if __name__ == "__main__":
     run_audit()
