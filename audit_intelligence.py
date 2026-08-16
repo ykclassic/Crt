@@ -9,13 +9,10 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
-from config import (
-    KILL_THRESHOLD,
-    PERFORMANCE_FILE,
-    RECOVERY_THRESHOLD,
-)
+from config import KILL_THRESHOLD, PERFORMANCE_FILE, RECOVERY_THRESHOLD
 from governance_db import (
     get_connection,
     init_governance_db,
@@ -26,7 +23,6 @@ from governance_db import (
 
 BASE_DIR = Path(__file__).resolve().parent
 PERFORMANCE_PATH = BASE_DIR / PERFORMANCE_FILE
-
 MAX_SIGNALS_PER_ENGINE = 30
 
 logging.basicConfig(
@@ -55,14 +51,12 @@ def determine_status(
     return status
 
 
-def load_engine_metrics() -> dict[str, dict]:
-    """Aggregate recent governance evaluations by engine."""
+def load_engine_metrics() -> dict[str, dict[str, int]]:
+    """Aggregate the most recent finalized evaluations by engine."""
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT
-                engine_id,
-                outcome
+            SELECT engine_id, outcome
             FROM (
                 SELECT
                     engine_id,
@@ -80,7 +74,7 @@ def load_engine_metrics() -> dict[str, dict]:
             (MAX_SIGNALS_PER_ENGINE,),
         ).fetchall()
 
-    metrics: dict[str, dict] = {}
+    metrics: dict[str, dict[str, int]] = {}
 
     for row in rows:
         engine = str(row["engine_id"])
@@ -138,7 +132,7 @@ def run_audit() -> None:
         pending = int(values["pending"])
         errors = int(values["errors"])
         total = wins + losses
-        win_rate = (wins / total * 100) if total else 0.0
+        win_rate = wins / total * 100 if total else 0.0
 
         previous_status = load_engine_status(engine) or "LIVE"
         status = determine_status(
@@ -166,9 +160,7 @@ def run_audit() -> None:
             "pending": pending,
             "errors": errors,
             "status": status,
-            "last_updated": __import__("datetime").datetime.now(
-                __import__("datetime").timezone.utc
-            ).isoformat(),
+            "last_updated": datetime.now(timezone.utc).isoformat(),
         }
 
         logging.info(
