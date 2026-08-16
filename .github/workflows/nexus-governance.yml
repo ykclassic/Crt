@@ -37,22 +37,49 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary -r requirements.txt
-          pip install --upgrade ccxt
+          pip install --upgrade ccxt requests
 
-      # 4️⃣ Download Database Artifact from Primary Pipeline
-      - name: Download Signals Database
-        uses: dawidd6/action-download-artifact@v7
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          workflow: nexus_pipeline.yml
-          name: nexus_signals_db
-          path: .
-          allow_forks: true # <--- Fixes the Not Found API restriction
+      # 4️⃣ Native API Download of Database Artifact (Bypasses 404 wrapper bugs)
+      - name: Download Signals Database via GitHub API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🔍 Fetching latest successful workflow run ID..."
+          
+          # Get the ID of the latest successful run in this repo
+          RUN_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?status=success&per_page=5" \
+            | jq -r '.workflow_runs[0].id')
+
+          if [ "$RUN_ID" == "null" ] || [ -z "$RUN_ID" ]; then
+            echo "❌ No successful workflow runs found."
+            exit 1
+          fi
+          
+          echo "📥 Found latest successful Run ID: $RUN_ID. Fetching artifact URL..."
+
+          # Get the download URL for the artifact named 'nexus_signals_db'
+          ARTIFACT_URL=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
+            | jq -r '.artifacts[]? | select(.name=="nexus_signals_db") | .archive_download_url')
+
+          if [ -z "$ARTIFACT_URL" ] || [ "$ARTIFACT_URL" == "null" ]; then
+            echo "❌ Artifact 'nexus_signals_db' not found in run $RUN_ID."
+            exit 1
+          fi
+
+          echo "⬇️ Downloading artifact archive..."
+          curl -s -L -H "Authorization: token $GH_TOKEN" "$ARTIFACT_URL" -o artifact.zip
+
+          echo "📦 Extracting database..."
+          unzip -o artifact.zip
+          rm artifact.zip
 
       - name: Verify Database Exists
         run: |
           if [ ! -f nexus_signals.db ]; then
-            echo "❌ nexus_signals.db not found! Artifact download failed."
+            echo "❌ nexus_signals.db not found after extraction!"
+            ls -la
             exit 1
           fi
           echo "✅ Database successfully mounted."
