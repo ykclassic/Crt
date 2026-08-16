@@ -25,28 +25,22 @@ jobs:
         with:
           fetch-depth: 1
 
-      # 2️⃣ Download Database Artifact
+      # 2️⃣ Download Database Artifact from Triggering Run
       - name: Download Signals Database
         uses: actions/download-artifact@v4
         with:
           name: nexus_signals_db
-          # Since this is a separate workflow, we target the run that triggered this one
           run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: . # Ensure it drops into the root directory directly
 
       # 3️⃣ Confirm DB Presence
       - name: Verify Database
         run: |
-          # The artifact download creates a directory if multiple files exist, 
-          # but for a single file, we check the current path or the folder.
-          if [ ! -f nexus_signals.db ] && [ ! -f nexus_signals_db/nexus_signals.db ]; then
+          if [ ! -f nexus_signals.db ]; then
             echo "❌ Database not found after artifact download."
-            ls -R # List files to help debug if it moved
+            ls -R
             exit 1
-          fi
-          # Move file if it was downloaded into a subfolder
-          if [ -f nexus_signals_db/nexus_signals.db ]; then
-            mv nexus_signals_db/nexus_signals.db .
           fi
           echo "✅ Database loaded."
 
@@ -62,6 +56,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --prefer-binary -r requirements.txt
+          pip install --upgrade ccxt
 
       # 6️⃣ Run Alert Monitor
       - name: Run Alert Monitor
