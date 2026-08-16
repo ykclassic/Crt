@@ -25,14 +25,15 @@ jobs:
         with:
           fetch-depth: 1
 
-      # 2️⃣ Download Database Artifact from Triggering Run
+      # 2️⃣ Download Database Artifact across workflow boundaries
       - name: Download Signals Database
-        uses: actions/download-artifact@v4
+        uses: dawidd6/action-download-artifact@v7
         with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: nexus_pipeline.yml # Make sure this matches your primary workflow filename exactly
+          run_id: ${{ github.event.workflow_run.id }}
           name: nexus_signals_db
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: . # Ensure it drops into the root directory directly
+          path: .
 
       # 3️⃣ Confirm DB Presence
       - name: Verify Database
