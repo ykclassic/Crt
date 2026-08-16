@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: read # Required to download artifacts from other workflow runs
+      actions: read 
       
     steps:
       - name: Checkout Code
@@ -27,9 +27,10 @@ jobs:
           pip install pandas numpy requests plotly kaleido
 
       - name: 📥 Download Nexus Database Artifact
-        uses: dawidd6/action-download-artifact@v3
+        uses: dawidd6/action-download-artifact@v7 # Upgraded to suppress Node 20 warning
         with:
-          workflow: nexus_pipeline.yml
+          github_token: ${{ secrets.GITHUB_TOKEN }} # Explicitly pass token for API auth
+          workflow: alert_cron.yml # <--- UPDATE THIS TO YOUR HOURLY WORKFLOW FILE NAME
           name: nexus_signals_db
           path: .
 
