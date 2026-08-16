@@ -19,18 +19,17 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12' # Matched to 3.12 from your core Nexus pipeline
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "pandas<2.1.0" "numpy<2.0.0" requests plotly kaleido
+          pip install pandas numpy requests plotly kaleido
 
-      # Pulls the active production database artifact from your primary hourly workflow
       - name: 📥 Download Nexus Database Artifact
         uses: dawidd6/action-download-artifact@v3
         with:
-          workflow: nexus_pipeline.yml # MUST MATCH the exact filename of your main workflow file
+          workflow: nexus_pipeline.yml
           name: nexus_signals_db
           path: .
 
