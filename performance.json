@@ -4,10 +4,10 @@
         "total_trades": 0,
         "wins": 0,
         "losses": 0,
-        "pending": 30,
-        "errors": 0,
+        "pending": 28,
+        "errors": 2,
         "status": "RECOVERY",
-        "last_updated": "2026-08-19T02:14:27.929249+00:00"
+        "last_updated": "2026-08-19T03:24:39.283072+00:00"
     },
     "RANGEMASTER": {
         "win_rate": 0.0,
@@ -17,26 +17,26 @@
         "pending": 23,
         "errors": 0,
         "status": "LIVE",
-        "last_updated": "2026-08-19T02:14:34.874176+00:00"
+        "last_updated": "2026-08-19T03:24:46.802012+00:00"
     },
     "HYBRID_V1": {
         "win_rate": 0.0,
         "total_trades": 0,
         "wins": 0,
         "losses": 0,
-        "pending": 30,
-        "errors": 0,
+        "pending": 24,
+        "errors": 6,
         "status": "LIVE",
-        "last_updated": "2026-08-19T02:14:42.681858+00:00"
+        "last_updated": "2026-08-19T03:24:56.294888+00:00"
     },
     "AI_PREDICT": {
         "win_rate": 0.0,
         "total_trades": 0,
         "wins": 0,
         "losses": 0,
-        "pending": 19,
-        "errors": 11,
+        "pending": 4,
+        "errors": 26,
         "status": "LIVE",
-        "last_updated": "2026-08-19T02:14:51.123655+00:00"
+        "last_updated": "2026-08-19T03:25:05.595337+00:00"
     }
 }
