@@ -1,13 +1,13 @@
 {
     "CORE_ENGINE": {
         "win_rate": 100.0,
-        "total_trades": 3,
-        "wins": 3,
+        "total_trades": 4,
+        "wins": 4,
         "losses": 0,
-        "pending": 21,
-        "errors": 6,
+        "pending": 26,
+        "errors": 0,
         "status": "RECOVERY",
-        "last_updated": "2026-08-21T03:28:48.574607+00:00"
+        "last_updated": "2026-08-21T04:10:02.981488+00:00"
     },
     "RANGEMASTER": {
         "win_rate": 7.14,
@@ -17,26 +17,26 @@
         "pending": 2,
         "errors": 0,
         "status": "RECOVERY",
-        "last_updated": "2026-08-21T03:28:57.609532+00:00"
+        "last_updated": "2026-08-21T04:10:11.207378+00:00"
     },
     "HYBRID_V1": {
         "win_rate": 100.0,
-        "total_trades": 3,
-        "wins": 3,
+        "total_trades": 4,
+        "wins": 4,
         "losses": 0,
-        "pending": 21,
-        "errors": 6,
+        "pending": 26,
+        "errors": 0,
         "status": "RECOVERY",
-        "last_updated": "2026-08-21T03:29:07.538346+00:00"
+        "last_updated": "2026-08-21T04:10:19.655229+00:00"
     },
     "AI_PREDICT": {
-        "win_rate": 63.64,
-        "total_trades": 11,
-        "wins": 7,
+        "win_rate": 66.67,
+        "total_trades": 12,
+        "wins": 8,
         "losses": 4,
-        "pending": 12,
-        "errors": 7,
+        "pending": 14,
+        "errors": 4,
         "status": "LIVE",
-        "last_updated": "2026-08-21T03:29:18.189452+00:00"
+        "last_updated": "2026-08-21T04:10:27.735946+00:00"
     }
 }
