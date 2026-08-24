@@ -7,7 +7,7 @@
         "pending": 18,
         "errors": 0,
         "status": "RECOVERY",
-        "last_updated": "2026-08-24T06:01:30.415769+00:00"
+        "last_updated": "2026-08-24T07:08:06.084014+00:00"
     },
     "HYBRID_V1": {
         "win_rate": 0.0,
@@ -17,7 +17,7 @@
         "pending": 28,
         "errors": 0,
         "status": "RECOVERY",
-        "last_updated": "2026-08-24T06:01:39.047568+00:00"
+        "last_updated": "2026-08-24T07:08:15.399973+00:00"
     },
     "AI_PREDICT": {
         "win_rate": 0.0,
@@ -27,7 +27,7 @@
         "pending": 15,
         "errors": 15,
         "status": "RECOVERY",
-        "last_updated": "2026-08-24T06:01:48.819713+00:00"
+        "last_updated": "2026-08-24T07:08:24.180710+00:00"
     },
     "RANGEMASTER": {
         "win_rate": 23.81,
@@ -37,6 +37,6 @@
         "pending": 9,
         "errors": 0,
         "status": "RECOVERY",
-        "last_updated": "2026-08-24T06:01:57.688813+00:00"
+        "last_updated": "2026-08-24T07:08:34.476526+00:00"
     }
 }
